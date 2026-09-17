@@ -153,7 +153,7 @@ function missingFields(cfg) {
   return null
 }
 
-// 이슈 타입은 프로젝트마다 다르다 (같은 사이트에서도 ZEROTALK 은 에픽/스토리/작업/버그,
+// 이슈 타입은 프로젝트마다 다르다 (같은 사이트에서도 PROJ 은 에픽/스토리/작업/버그,
 // ANR 은 버그/ANR 이다). 그래서 고정 목록을 두지 않고 프로젝트에서 직접 받아온다.
 // createmeta 대신 project 조회를 쓴다 — 엔드포인트가 안 바뀌고 한 번만 치면 된다.
 async function listIssueTypes(cfg, projectKey) {
@@ -379,12 +379,12 @@ if (require.main === module) {
   // 사람이 복사해 오는 온갖 형태의 주소를 origin 으로 정규화한다
   assert.strictEqual(apiBase('https://zerosoft0.atlassian.net/'), 'https://zerosoft0.atlassian.net')
   assert.strictEqual(apiBase('zerosoft0.atlassian.net'), 'https://zerosoft0.atlassian.net')
-  assert.strictEqual(apiBase('https://zerosoft0.atlassian.net/jira/software/projects/ZEROTALK/boards/1'),
+  assert.strictEqual(apiBase('https://zerosoft0.atlassian.net/jira/software/projects/PROJ/boards/1'),
     'https://zerosoft0.atlassian.net')
   assert.strictEqual(apiBase(''), '')
 
-  const body = buildIssueBody({ project: ' zerotalk ', issueType: '버그', summary: ' 제목 ', description: '본문', labels: ['qa'] })
-  assert.strictEqual(body.fields.project.key, 'ZEROTALK', '프로젝트 키는 대문자로 보정')
+  const body = buildIssueBody({ project: ' proj ', issueType: '버그', summary: ' 제목 ', description: '본문', labels: ['qa'] })
+  assert.strictEqual(body.fields.project.key, 'PROJ', '프로젝트 키는 대문자로 보정')
   assert.strictEqual(body.fields.summary, '제목')
   assert.strictEqual(body.fields.issuetype.name, '버그')
   assert.deepStrictEqual(body.fields.labels, ['qa'])
@@ -415,7 +415,7 @@ if (require.main === module) {
       if (url.startsWith('https://api.atlassian.com/ex/jira/CID')) {
         return url.includes('/myself')
           ? mk(403, { errorMessages: ['권한 없음'] })          // 스코프 빠져도 연결은 성공이어야 한다
-          : mk(200, { values: [{ key: 'ZEROTALK', name: '제로톡' }, { key: 'ANR' }], total: 2 })
+          : mk(200, { values: [{ key: 'PROJ', name: '샘플프로젝트' }, { key: 'ANR' }], total: 2 })
       }
       return mk(401, { errorMessages: ['Client must be authenticated to access this resource.'] })
     }
@@ -428,9 +428,9 @@ if (require.main === module) {
     const cfg = { site: 'x.atlassian.net', email: 'a@b.c', token: 'ATCTT-scoped' }
     const r = await testConn(cfg)
     assert.ok(r.ok, '게이트웨이 폴백 실패: ' + r.message)
-    assert.deepStrictEqual(r.keys, ['ZEROTALK', 'ANR'], '프로젝트 키를 못 받았다')
-    // 이름이 없는 프로젝트는 키로 대체해야 화면에 '- ZEROTALK' 처럼 빈 이름이 안 뜬다
-    assert.deepStrictEqual(r.projects, [{ key: 'ZEROTALK', name: '제로톡' }, { key: 'ANR', name: 'ANR' }])
+    assert.deepStrictEqual(r.keys, ['PROJ', 'ANR'], '프로젝트 키를 못 받았다')
+    // 이름이 없는 프로젝트는 키로 대체해야 화면에 '- PROJ' 처럼 빈 이름이 안 뜬다
+    assert.deepStrictEqual(r.projects, [{ key: 'PROJ', name: '샘플프로젝트' }, { key: 'ANR', name: 'ANR' }])
     assert.strictEqual(r.name, '', '/myself 가 403 이어도 연결은 성공이어야 한다')
     assert.ok(calls.some(u => u.includes('tenant_info')), 'cloudId 조회를 안 했다')
     assert.ok(calls.some(u => u.startsWith('https://api.atlassian.com/ex/jira/CID')), '게이트웨이로 재시도를 안 했다')
@@ -451,7 +451,7 @@ if (require.main === module) {
       return mk(200, {})
     }
     const bad = await createIssue({ site: 'y.atlassian.net', email: 'a@b.c', token: 't' },
-      { project: 'ZEROTALK', issueType: '버그', summary: '테스트' })
+      { project: 'PROJ', issueType: '버그', summary: '테스트' })
     assert.ok(!bad.ok)
     assert.ok(bad.message.includes('보이는 프로젝트: ANR, MUSIC'), '원인 안내가 없다: ' + bad.message)
 
@@ -460,11 +460,11 @@ if (require.main === module) {
       if (url.includes('/rest/api/2/issue') && !url.includes('project/search')) {
         return mk(400, { errorMessages: ['대상 프로젝트가 존재하지 않거나 권한이 없습니다'] })
       }
-      if (url.includes('project/search')) return mk(200, { values: [{ key: 'ZEROTALK' }], total: 1 })
+      if (url.includes('project/search')) return mk(200, { values: [{ key: 'PROJ' }], total: 1 })
       return mk(200, {})
     }
     const perm = await createIssue({ site: 'y.atlassian.net', email: 'a@b.c', token: 't' },
-      { project: 'ZEROTALK', issueType: '버그', summary: '테스트' })
+      { project: 'PROJ', issueType: '버그', summary: '테스트' })
     assert.ok(perm.message.includes('키는 맞으니'), '권한 쪽 안내가 없다: ' + perm.message)
 
     // 이메일 오타 → Jira 가 익명으로 처리 → 생성은 '프로젝트 없음', 목록 조회는 401.
@@ -476,13 +476,13 @@ if (require.main === module) {
       return mk(400, { errorMessages: ['대상 프로젝트가 존재하지 않거나 권한이 없습니다'] })
     }
     const anon = await createIssue({ site: 'z.atlassian.net', email: 'typo@b.c', token: 't' },
-      { project: 'ZEROTALK', issueType: '버그', summary: '테스트' })
+      { project: 'PROJ', issueType: '버그', summary: '테스트' })
     assert.ok(anon.message.includes('인증 문제'), '이메일 오타를 인증 문제로 안내하지 않는다: ' + anon.message)
 
     // 이슈 타입은 프로젝트에서 받아오고, 하위 작업은 빼야 한다 (부모 없이 못 만든다)
     baseCacheClearForTest()
     global.fetch = async (url) => {
-      if (url.includes('/rest/api/2/project/ZEROTALK')) {
+      if (url.includes('/rest/api/2/project/PROJ')) {
         return mk(200, {
           issueTypes: [
             { name: '에픽' }, { name: '스토리' }, { name: '작업' },
@@ -493,12 +493,12 @@ if (require.main === module) {
       return mk(404, {})
     }
     const cfg2 = { site: 'w.atlassian.net', email: 'a@b.c', token: 't' }
-    const ts = await listIssueTypes(cfg2, ' zerotalk ')
+    const ts = await listIssueTypes(cfg2, ' proj ')
     assert.ok(ts.ok, '이슈 타입 조회 실패: ' + ts.message)
     assert.deepStrictEqual(ts.types, ['에픽', '스토리', '작업', '버그'], '하위 작업이 안 걸러졌다: ' + ts.types)
     assert.ok(!(await listIssueTypes(cfg2, '')).ok, '빈 키를 걸러야 한다')
 
-    // 생성 화면 필드 목록 — 실제 ZEROTALK/버그 응답 모양으로 검사한다
+    // 생성 화면 필드 목록 — 실제 PROJ/버그 응답 모양으로 검사한다
     baseCacheClearForTest()
     global.fetch = async (url) => {
       if (!url.includes('/createmeta/')) return mk(404, {})
@@ -523,7 +523,7 @@ if (require.main === module) {
         ],
       })
     }
-    const fr = await listCreateFields(cfg2, 'ZEROTALK', '10023')
+    const fr = await listCreateFields(cfg2, 'PROJ', '10023')
     assert.ok(fr.ok, '필드 조회 실패: ' + fr.message)
     assert.deepStrictEqual(fr.fields.map(f => f.id), ['customfield_10131', 'fixVersions', 'priority'],
       '요약·설명·미지원 타입이 안 걸러졌다: ' + fr.fields.map(f => f.id))
@@ -553,7 +553,7 @@ if (require.main === module) {
     global.fetch = async () => mk(401, { errorMessages: ['Client must be authenticated'] })
     const cfgOld = { site: 'expired.atlassian.net', email: 'a@b.c', token: 'old' }
     for (const [name, r] of [
-      ['listIssueTypes', await listIssueTypes(cfgOld, 'ZEROTALK')],
+      ['listIssueTypes', await listIssueTypes(cfgOld, 'PROJ')],
       ['pingAuth', await pingAuth(cfgOld)],
     ]) {
       assert.strictEqual(r.status, 401, name + ': status 가 안 넘어온다')

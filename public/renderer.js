@@ -2145,7 +2145,7 @@ async function testJira() {
 
 let jiraProjects = []   // [{ key, name }] — 연결 테스트로 받아와 저장해 둔다
 
-// 이슈 타입은 사이트가 아니라 프로젝트마다 다르다 (ZEROTALK 은 에픽/스토리/작업/버그,
+// 이슈 타입은 사이트가 아니라 프로젝트마다 다르다 (PROJ 은 에픽/스토리/작업/버그,
 // ANR 은 버그/ANR). 그래서 고정 목록 대신 프로젝트에서 받아와 드롭다운을 채운다.
 const JIRA_FALLBACK_TYPES = ['버그', '작업', '스토리', '에픽']
 const jiraTypeCache = {}   // 프로젝트 키 → 타입 이름 목록

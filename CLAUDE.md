@@ -53,11 +53,13 @@ UI 는 **3컬럼**이다: 도구 패널 · 디바이스(canvas) · LogCat. 마�
 
 주의할 점:
 
-- **프로토콜 상수는 `[raw]` 로그로 실측해서 정한다. 그리고 scrcpy-server 버전마다 다를 수 있다.** 코드의 `DEVICE_NAME_LEN = 65`(더미 1B + 이름 64B), `CODEC_ID_LEN = 4`, `SESSION_META_LEN = 12`(offset 4=width, 8=height)는 **다운로드본 v4.1 + SM-G973N 조합에서 실측 확인**했다. 반면 파일 상단 주석은 v4.0 기준으로 `flags 없이 8B` 라고 적혀 있다 — **둘 다 실제로 관측된 적이 있다.**
-  - v4.1 실측: 코덱 뒤 12B = `80000000 | 0000025e(606) | 00000500(1280)` → 앞 4B 는 flags, 그래서 offset 4/8 이 맞다.
-  - 다른 기기(iMac, SM-G981N)에서는 코덱 뒤가 `00000240(576) | 00000500(1280)` 8B 로 관측됐다 — flags 가 없다. 이때 offset 4/8 로 읽으면 width 에 height 가, height 에 프레임 헤더 PTS 상위 4B 인 `0x80000000`(=2147483648)이 들어간다.
-  - **증상: 해상도 로그에 `×2147483648` 또는 `2147483648×` 이 보이면 이 오프셋 문제다.** 프레임 경계까지 밀려 SPS/PPS 가 깨지므로 겉으로는 디코더 쪽 `A key frame is required after configure()` 로 나타나 원인을 놓치기 쉽다.
-  - 원인 후보 1순위는 **jar 출처**다. `ensureJar()` 는 `/opt/homebrew/share/scrcpy/scrcpy-server` 등 **시스템 설치본을 GitHub 다운로드본보다 먼저** 집는다(`mirror-bridge.js:131-135`). brew 로 scrcpy 를 깐 기기는 다른 버전의 jar 를 쓰게 되므로 헤더 레이아웃이 달라질 수 있다. 문제가 생기면 로그의 `jar @ ...` 줄로 어느 jar 를 썼는지부터 확인할 것.
+- **`session_meta` 길이는 상수가 아니다. 값을 보고 판별한다** (`parseSessionMeta()`). `DEVICE_NAME_LEN = 65`(더미 1B + 이름 64B)와 `CODEC_ID_LEN = 4` 는 고정이지만, 그 뒤 width/height 블록은 **서버 빌드마다 레이아웃이 달라지는 것이 실측으로 확인됐다.**
+  - `8B` 형태 = `[width][height]` — iMac / SM-G981N 에서 관측 (`00000240`=576, `00000500`=1280)
+  - `12B` 형태 = `[flags][width][height]` — 다운로드본 v4.1 에서 관측 (`80000000`, `0000025e`=606, `00000500`=1280)
+  - 해상도는 값 범위가 좁고(1~`MAX_DIM`=8192) flags 는 최상위 비트가 서 있어 값만으로 구분된다. 오프셋을 고정하면 **한쪽을 맞추는 순간 다른 쪽이 깨진다** — 실제로 그렇게 한 번 잘못 고쳤다. 판별 불가면 `null` 을 돌려 세션을 끊는다(쓰레기값으로 조용히 진행하지 않게).
+  - **증상 단서: 해상도 로그에 `2147483648`(=`0x80000000`, 프레임 헤더 PTS 상위 4B)이 보이면 이 블록을 잘못 읽은 것이다.** 프레임 경계까지 밀려 SPS/PPS 가 깨지므로 겉으로는 디코더 쪽 `A key frame is required after configure()` 로 나타나 원인을 놓치기 쉽다.
+  - 레이아웃이 왜 갈리는지는 아직 확정하지 못했다. 1순위 후보는 **jar 출처**다 — `ensureJar()` 는 `/opt/homebrew/share/scrcpy/scrcpy-server` 등 **시스템 설치본을 GitHub 다운로드본보다 먼저** 집는다(`mirror-bridge.js:131-135`). brew 로 scrcpy 를 깐 기기는 다른 버전 jar 를 쓰게 된다. 기기 차이는 아니다(같은 SM-G981N 이 양쪽 형태로 관측됐다). 문제가 생기면 로그의 `jar @ ...` 줄부터 볼 것.
+  - 세 번째 레이아웃이 나오면 `해상도 파싱 실패 — 헤더 앞 12B: <hex>` 가 로그에 남는다. 그 hex 를 자가진단 케이스로 추가하면 된다.
 - 비디오 소켓과 제어 소켓은 **같은 forward 포트로 순서대로 두 번 connect** 해서 얻는다. 둘 다 성공해야 스트리밍이 시작된다. `controlSock` 은 현재 **쓰기 전용**이다 — 역방향 스트림(기기 클립보드 응답 등)은 아직 아무도 읽지 않는다.
 - 디코더 코덱이 `avc1.640020` 으로 하드코딩되어 있고, config 패킷(SPS+PPS)은 `configNalBuffer` 에 캐시해뒀다가 IDR 앞에 수동으로 붙여야 한다 (`feedFrame()`). VideoDecoder 는 description 없이 config 만으로는 디코딩하지 못한다.
 - jar 버전 문자열은 `app_process` 인자로 그대로 넘어가고 **서버가 자기 버전과 다르면 기동을 거부한다** (`IllegalArgumentException: The server version (4.1) does not match the client (...)`). 버전은 ① `ensureJar()` 의 다운로드 경로가 알려준 값 → ② `_jarVer()` 의 파일명 파싱 → ③ `_probeJarVer()` 가 서버에 직접 물어본 값 순으로 정해진다. ③ 덕분에 파일명에 버전이 없는 jar(`Windows_setup.ps1` 이 zip 에서 복사한 것, brew 설치본)도 그냥 동작하므로 **리네임은 필요 없다.** `FALLBACK_VER` 는 ③까지 실패했을 때만 쓰이는 최후값이라 정확할 필요가 없다.

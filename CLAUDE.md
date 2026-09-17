@@ -19,6 +19,9 @@ npm run notarize:mac # 위 + Apple 공증 + staple (외부 배포용, 20분+)
 
 node src/jira.js          # Jira 모듈 자가진단 (fetch 를 가짜로 바꿔 끼운 assert 스위트)
 node src/hid-keyboard.js  # HID 리포트/디스크립터 자가진단
+node src/mirror-bridge.js # session_meta 레이아웃 판별 자가진단
+node src/ios-device.js    # iOS syslog 파싱·logcat 변환 자가진단
+npm run check             # 위 전부 + renderer.js 문법 검사
 ```
 
 - **테스트 러너·린트·번들러가 없다.** 검증 수단은 두 가지뿐이다: 위 두 자가진단(`require.main === module` 가드 안의 `assert`)과 `npm run dev` 로 직접 실행. 순수 로직을 새로 추가하면 같은 방식으로 자가진단을 붙이는 것이 이 저장소의 관행이다(Electron 의존이 없어야 단독 실행된다).
@@ -29,7 +32,7 @@ node src/hid-keyboard.js  # HID 리포트/디스크립터 자가진단
 
 ## 아키텍처
 
-Electron 3-프로세스 구조에, **서로 독립적인 백엔드 4개**가 물려 있다.
+Electron 3-프로세스 구조에, **서로 독립적인 백엔드 5개**가 물려 있다.
 
 ```
 public/renderer.js ──(window.db.*)──> src/preload.js ──(ipcRenderer)──> src/main.js
@@ -40,6 +43,8 @@ MirrorBridge      ProxyServer          jira.js         adb 직접 호출
 mirror-bridge.js  proxy-server.js      Jira Cloud      runAdb / spawn:
 +hid-keyboard.js  +cert-manager.js     REST v2         캡처·녹화·APK·파일·기기정보
 │                                                      + LogCat (→ logcat:data)
+│                 ios-device.js — libimobiledevice: 기기·정보·syslog
+│                 (syslog 를 logcat 형식으로 바꿔 같은 logcat:data 채널로 보낸다)
 adb forward tcp → scrcpy 소켓 파싱 → 로컬 WS
 │
 renderer: WebSocket → WebCodecs VideoDecoder → <canvas>
@@ -86,12 +91,30 @@ UI 는 **3컬럼**이다: 도구 패널 · 디바이스(canvas) · LogCat. 마�
 
 Jira(`src/jira.js`)는 **REST API v2** 를 쓴다 — v3 는 description 을 ADF JSON 으로만 받아 QA 리포트 평문을 넣을 수 없다. 토큰은 `safeStorage` 로 암호화해 `userData/jira.json`(mode 0600)에 두고 **렌더러로는 절대 돌려보내지 않는다**(`hasToken` 불리언만). `jira:open` 은 atlassian.net / id.atlassian.com 만 허용하는 화이트리스트가 걸려 있다. 스코프형 토큰이면 사이트 주소가 401 이라 `api.atlassian.com/ex/jira/<cloudId>` 게이트웨이로 폴백하고 그 경로를 캐시한다 — 이 분기는 자가진단이 덮고 있다.
 
-### 4. 패킷 분석 프록시 (`src/proxy-server.js`, `src/cert-manager.js`)
+### 4. iOS 지원 범위 (`src/ios-device.js`)
+
+**기기 인식 · 기기 정보 · 실시간 syslog 까지만 한다. 화면 미러링과 입력 주입은 지원하지 않는다.** libimobiledevice CLI 를 spawn 하는 얇은 래퍼이고, Android 쪽 코드(`mirror-bridge.js` / `hid-keyboard.js`)는 건드리지 않는다.
+
+- **syslog 를 logcat threadtime 형식으로 변환해 기존 `logcat:data` 채널로 흘린다.** 렌더러가 `LOGCAT_PARSE_RE` 하나로 모든 줄을 읽으므로 레벨·태그·PID 필터와 검색이 그대로 재사용된다. 새 이벤트 채널을 만들지 말 것.
+- **물량이 Android 와 다르다.** 필터 없이 초당 약 1,300줄, `--quiet` 로도 초당 약 390줄이라 `LOGCAT_MAX_LINES`(3,000)를 몇 초면 넘긴다. 프로세스를 지정하면 초당 49줄까지 떨어진다. `-p` 와 `-q` 는 **같이 못 쓴다**(idevicesyslog 가 거부, include/exclude 상호배타).
+- iOS 는 포그라운드 앱을 알 수 없어 Android 의 '현재 실행중인 앱' 필터 대신 프로세스를 직접 고른다(`idevicesyslog pidlist`). 기기 제어 툴바는 전부 adb 전용이라 iOS 에서는 감춘다.
+- Windows 는 **Apple Devices 앱(또는 iTunes)** 이 `Apple Mobile Device Service` 로 usbmuxd 역할을 한다. 없으면 도구가 기기를 못 찾는다.
+
+**미러링을 다시 검토한다면 아래는 이미 시도해서 막힌 길이다 (2026-09-17 실측):**
+
+- **CMIO/DAL 캡처** — Apple 이 DAL 플러그인 지원을 제거했다. `kCMIOHardwarePropertyAllowScreenCaptureDevices` 설정은 성공(status 0)하는데 기기가 캡처 장치로 나타나지 않고, `/Library/CoreMediaIO/Plug-Ins/DAL/` 은 비어 있으며 시스템 쪽 디렉터리는 아예 없다.
+- **macOS 내장 AirPlay 수신기 창 캡처** — 수신은 되지만(포트 7000 ESTABLISHED, AWDL 피어투피어) 화면이 **창으로도 디스플레이로도 열거되지 않는다.** 전용 Space 에 비공개 합성되어 `desktopCapturer` 로 잡을 대상이 없다. 전체화면을 점령해 다른 작업도 막는다.
+- **iPhone Mirroring(연속성)** — 같은 Apple ID 필수, API 없음.
+- **go-ios MJPEG** (`ios screenshot --stream`) — **동작한다.** `ios tunnel start --userspace` 는 root 도 필요 없어 앱이 직접 spawn 할 수 있고, `multipart/x-mixed-replace` 라 `<img>` 한 줄로 표시된다. 다만 **약 2.6fps**(프레임당 243KB)라 슬라이드쇼 수준이다. DVT 스크린샷 서비스를 반복 호출하는 구조라 구조적 한계다.
+- 60fps 를 내려면 기기의 하드웨어 H.264 인코더를 써야 하고, 경로는 AirPlay 수신기 직접 구현 또는 QuickTime USB 프로토콜 직접 구현뿐이다. 둘 다 수 주 규모이며 기성 Node 라이브러리가 없다(`quicktime_video_hack` 은 2022-08 이후 방치, npm 의 AirPlay 구현은 오디오 전용).
+- 스크린샷: `idevicescreenshot` 은 iOS 17+ 에서 터널이 필요해 막힌다. 다만 **AFC 는 터널 없이 되므로**(`afcclient get DCIM/100APPLE/…`) 기기에서 찍은 스크린샷을 회수하는 방식은 가능하다 — 검증만 했고 구현하지 않았다.
+
+### 5. 패킷 분석 프록시 (`src/proxy-server.js`, `src/cert-manager.js`)
 
 MITM HTTP/HTTPS 프록시. CONNECT 터널을 가로채 node-forge 로 호스트별 인증서를 즉석 발급(CA 는 `userData/proxy-certs` 에 영속)하고, 복호화한 요청/응답을 `proxy:packet` 이벤트로 렌더러에 흘린다. 기기 설정은 adb(`settings put global http_proxy`) 로 자동 주입한다.
 `proxy:patch-and-install-apk` 는 **PC 에 Java 가 설치돼 있어야** 하고 `npx apk-mitm` 을 그때그때 실행한다 (번들 아님).
 
-### 5. 그 외 기능
+### 6. 그 외 기능
 
 캡처·녹화·APK 설치·파일 전송·클립보드·키이벤트는 `main.js` 에서 adb 를 직접 호출한다. 결과는 예외를 던지지 않고 **`{ ok, message }` 객체로 반환**하는 것이 이 코드베이스 전체의 규약이다 (`{ ok:false, canceled:true }` 로 사용자 취소를 구분하기도 한다).
 

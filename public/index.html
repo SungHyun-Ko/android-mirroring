@@ -18,7 +18,8 @@
     <!-- 왼쪽: 디바이스. 높이는 창의 60% 로 고정하며 그 아래로는 줄지 않는다 -->
     <div class="device-col">
       <!-- 기기 제어 툴바 — 디바이스 바로 위. 예전 미러링 탭의 '기기 제어' 카드를 대체한다 -->
-      <div class="device-bar">
+      <!-- adb 전용 컨트롤. iOS 기기에서는 동작하지 않아 syncLogControls() 가 감춘다 -->
+      <div class="device-bar" id="deviceBar">
         <button class="dev-btn" onclick="keyevent(4)" title="뒤로"><i class="ti ti-arrow-left"></i></button>
         <button class="dev-btn" onclick="keyevent(3)" title="홈"><i class="ti ti-circle"></i></button>
         <button class="dev-btn" onclick="keyevent(187)" title="최근 앱"><i class="ti ti-layout-grid"></i></button>

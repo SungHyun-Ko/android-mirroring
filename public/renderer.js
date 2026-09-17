@@ -172,13 +172,11 @@ function setConnected(name) {
   // 여기서는 syslog 만 띄운다.
   if (isIos()) {
     setClass('phoneIcon', 'ti ti-brand-apple')
-    // iOS 는 화면 데이터를 받아올 경로가 없다(scrcpy 대응물 없음, macOS 의 CMIO/DAL
-    // 경로는 제거됨). AirPlay 로 맥에 띄우고 이 앱은 로그·정보·티켓만 맡는다.
-    // 따라할 수 있게 단계를 그대로 적는다 — 그냥 "AirPlay 창에서 보세요" 는 불친절하다.
-    setText('phoneMsg', 'iOS 는 앱 안에 화면을 띄울 수 없습니다. ' +
-      '① 맥: 시스템 설정 → 일반 → AirDrop 및 Handoff → AirPlay 수신기 켜기 ' +
-      '② 아이폰: 제어 센터 → 화면 미러링 → 이 맥 선택. ' +
-      '로그와 기기 정보는 이 앱에서 그대로 보입니다.')
+    // iOS 는 화면 미러링을 지원하지 않는다. 기기를 직접 보며 테스트하고 이 앱은
+    // 로그·기기정보·티켓 등록을 맡는 구조다. (경로를 다 시도해 본 결과는 CLAUDE.md
+    // 의 'iOS 지원 범위' 참고 — AirPlay 도 macOS 내장 수신기는 임베드가 불가능하다)
+    setText('phoneMsg', 'iOS 는 화면 미러링을 지원하지 않습니다. 기기를 직접 보며 테스트하세요. ' +
+      '로그와 기기 정보는 이 앱에서 확인할 수 있습니다.')
     syncLogControls()
     if (!logcatRunning) toggleLogcat()
     return
@@ -1128,6 +1126,10 @@ async function syncLogControls() {
   const sel = $('iosLogProcess')
   const appBtn = $('logFilterBtn')
   if (appBtn) appBtn.style.display = isIos() ? 'none' : ''
+  // 기기 제어 툴바(전원·볼륨·회전·캡처·녹화)는 전부 adb 전용이다. iOS 에서 누르면
+  // 실패 토스트만 뜨므로 아예 감춘다.
+  const bar = $('deviceBar')
+  if (bar) bar.style.display = isIos() ? 'none' : ''
   if (!sel) return
   sel.style.display = isIos() ? '' : 'none'
   if (!isIos()) return

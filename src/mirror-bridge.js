@@ -22,9 +22,17 @@ const { WebSocketServer } = require('ws')
 const { execFile, spawn } = require('child_process')
 const path = require('path')
 const fs = require('fs')
+const hid = require('./hid-keyboard')
 
 const FALLBACK_VER = '4.1'
 const H264_CODEC_ID = 0x68323634  // ASCII "h264"
+
+// UHID 가상 키보드 식별자. Android 는 이 조합을 키로 물리 키보드 레이아웃 설정을
+// 저장하므로 바꾸면 사용자가 레이아웃을 매번 다시 잡아야 한다. 고정할 것.
+const UHID_ID = 1
+const UHID_VENDOR_ID = 0x1209
+const UHID_PRODUCT_ID = 0xdb01
+const UHID_NAME = 'DroidBridge Keyboard'
 
 class MirrorBridge {
   constructor({ adbPath, binDir, onLog }) {
@@ -40,6 +48,18 @@ class MirrorBridge {
     this.running = false
     this._metaJson = null   // 캐싱: 늦게 연결된 WS 클라이언트에게 전송
     this._frameCnt = 0
+    this.keyboardMode = 'clipboard'   // 'uhid' | 'clipboard' — start() 에서 판정
+  }
+
+  // UHID 는 API 레벨이 아니라 /dev/uhid 에 대한 SELinux 정책에 달려 있다.
+  // (AOSP 기준 Android 11~12 무렵 shell 도메인 접근이 열렸다)
+  async _detectKeyboardMode(serial) {
+    try {
+      const out = await this.adb(['-s', serial, 'shell', 'ls', '-l', '/dev/uhid'], 8000)
+      return /no such file|not found|denied/i.test(out) ? 'clipboard' : 'uhid'
+    } catch {
+      return 'clipboard'
+    }
   }
 
   // ── adb 헬퍼 ─────────────────────────────────────────────────
@@ -74,6 +94,9 @@ class MirrorBridge {
           try { ws.send(this._metaJson) } catch { }
           this.log('  → 캐시된 meta 전송: ' + this._metaJson)
         }
+        if (this._modeJson) {
+          try { ws.send(this._modeJson) } catch { }
+        }
         ws.on('message', data => {
           try {
             const msg = JSON.parse(data)
@@ -83,6 +106,14 @@ class MirrorBridge {
               this.injectKeycode(msg)
             } else if (msg.type === 'text') {
               this.injectText(msg)
+            } else if (msg.type === 'hid') {
+              // 렌더러는 nodeIntegration=false 라 hid-keyboard 를 require 할 수 없다.
+              // 눌린 KeyboardEvent.code 목록만 보내고 리포트 조립은 여기서 한다.
+              this.uhidInput(hid.buildReport(msg.codes || []))
+            } else if (msg.type === 'rotate') {
+              this.rotateDevice()
+            } else if (msg.type === 'openKeyboardSettings') {
+              this.openHardKeyboardSettings()
             }
           } catch (e) {
             this.log('WS 수신 메시지 처리 오류: ' + e.message)
@@ -166,12 +197,22 @@ class MirrorBridge {
 
       this.log('STEP 2: jar 확보...')
       const { path: jarPath, ver: rawVer } = await this.ensureJar()
-      const ver = rawVer || this._jarVer(jarPath) || FALLBACK_VER
-      this.log(`jar v${ver} @ ${jarPath}`)
+      let ver = rawVer || this._jarVer(jarPath)
+      this.log(`jar @ ${jarPath}${ver ? ` (v${ver})` : ' — 버전 미상'}`)
 
       this.log('STEP 3: adb push...')
       await this.adb(['-s', serial, 'push', jarPath, '/data/local/tmp/scrcpy-server.jar'])
       this.log('push OK')
+
+      // 파일명에 버전이 없는 jar (Windows_setup.ps1 이 zip 에서 복사한 것, brew 설치본 등)
+      // 은 여기서 서버에게 직접 물어본다. FALLBACK_VER 로 찍어 맞히면 scrcpy 가 새 버전을
+      // 낼 때마다 버전 불일치로 미러링이 통째로 죽는다.
+      if (!ver) {
+        this.log('STEP 3-1: jar 버전 조회...')
+        ver = await this._probeJarVer(serial)
+        this.log(ver ? `서버가 보고한 버전: v${ver}` : `조회 실패 — v${FALLBACK_VER} 로 진행`)
+        ver = ver || FALLBACK_VER
+      }
 
       this.log('STEP 4: adb forward...')
       const forwardOut = await this.adb(['-s', serial, 'forward', 'tcp:0', 'localabstract:scrcpy'])
@@ -184,7 +225,18 @@ class MirrorBridge {
       this.log('STEP 6: 소켓 연결...')
       await this._connectWithRetry()
 
-      this.log('STEP 7: 스트리밍 시작!')
+      this.log('STEP 7: 키보드 모드 판정...')
+      this.keyboardMode = await this._detectKeyboardMode(serial)
+      if (this.keyboardMode === 'uhid' && !this.uhidCreate()) this.keyboardMode = 'clipboard'
+      this.log(this.keyboardMode === 'uhid'
+        ? '키보드: UHID (물리 키보드 에뮬레이션) — 클립보드를 건드리지 않음'
+        : '키보드: 클립보드 방식 (UHID 사용 불가)')
+      // meta 는 _pipe 가 먼저 쏠 수 있어 경합한다. 모드는 별도 메시지로 보내고,
+      // 늦게 붙는 WS 클라이언트를 위해 캐시해 둔다 (_metaJson 과 같은 방식).
+      this._modeJson = JSON.stringify({ type: 'keyboardMode', mode: this.keyboardMode })
+      this._wsSend(this._modeJson)
+
+      this.log('STEP 8: 스트리밍 시작!')
     } catch (e) {
       this.log('ERROR: ' + e.message)
       this.running = false
@@ -215,7 +267,15 @@ class MirrorBridge {
     this.log('server args: ' + args.slice(5).join(' '))
     this.srvProc = spawn(this.adbPath, args)
 
-    const logLine = d => d.toString().split('\n').filter(Boolean).forEach(l => this.log(l))
+    const logLine = d => d.toString().split('\n').filter(Boolean).forEach(l => {
+      this.log(l)
+      // UHID 생성은 성공/실패가 비동기로 돌아오므로 서버 로그로 뒤늦게 감지해 되돌린다
+      if (this.keyboardMode === 'uhid' && /uhid/i.test(l) && /error|fail|exception|denied/i.test(l)) {
+        this.keyboardMode = 'clipboard'
+        this.log('⚠ UHID 실패 감지 — 클립보드 방식으로 전환')
+        this._wsSend(JSON.stringify({ type: 'keyboardMode', mode: 'clipboard' }))
+      }
+    })
     this.srvProc.stdout.on('data', logLine)
     this.srvProc.stderr.on('data', logLine)
     this.srvProc.on('close', code => {
@@ -491,14 +551,103 @@ class MirrorBridge {
     }
   }
 
+  // 파일명에서만 버전을 찾는다. 전체 경로를 훑으면 상위 폴더명의 숫자(예: proj-v2.0)를
+  // 버전으로 오인한다.
+  // ── UHID (물리 키보드 에뮬레이션) ────────────────────────────
+  //
+  // 와이어 포맷은 scrcpy v4.1 태그의 app/src/control_msg.c 기준:
+  //   UHID_CREATE (12): type(1) id(2BE) vendorId(2BE) productId(2BE)
+  //                     nameLen(1) name descSize(2BE) desc
+  //   UHID_INPUT  (13): type(1) id(2BE) size(2BE) data
+  //   UHID_DESTROY(14): type(1) id(2BE)
+
+  uhidCreate(maxUsage = hid.EXTENDED_MAX_USAGE) {
+    if (!this.controlSock || this.controlSock.destroyed) return false
+    const desc = hid.buildReportDesc(maxUsage)
+    const name = Buffer.from(UHID_NAME, 'utf8')
+    const buf = Buffer.alloc(8 + name.length + 2 + desc.length)
+    let o = 0
+    buf.writeUInt8(12, o); o += 1
+    buf.writeUInt16BE(UHID_ID, o); o += 2
+    buf.writeUInt16BE(UHID_VENDOR_ID, o); o += 2
+    buf.writeUInt16BE(UHID_PRODUCT_ID, o); o += 2
+    buf.writeUInt8(name.length, o); o += 1
+    name.copy(buf, o); o += name.length
+    buf.writeUInt16BE(desc.length, o); o += 2
+    desc.copy(buf, o)
+    try {
+      this.controlSock.write(buf)
+      this.log(`UHID 키보드 생성 요청 (desc ${desc.length}B, maxUsage 0x${maxUsage.toString(16)})`)
+      return true
+    } catch (e) {
+      this.log('UHID 생성 실패: ' + e.message)
+      return false
+    }
+  }
+
+  uhidInput(report) {
+    if (!this.controlSock || this.controlSock.destroyed) return
+    const buf = Buffer.alloc(5 + report.length)
+    buf.writeUInt8(13, 0)
+    buf.writeUInt16BE(UHID_ID, 1)
+    buf.writeUInt16BE(report.length, 3)
+    report.copy(buf, 5)
+    try { this.controlSock.write(buf) } catch (e) { this.log('UHID 입력 전송 실패: ' + e.message) }
+  }
+
+  uhidDestroy() {
+    if (!this.controlSock || this.controlSock.destroyed) return
+    const buf = Buffer.alloc(3)
+    buf.writeUInt8(14, 0)
+    buf.writeUInt16BE(UHID_ID, 1)
+    try { this.controlSock.write(buf) } catch { }
+  }
+
+  // 화면 회전 토글. 예전 UI 는 '회전' 버튼에 KEYCODE_MENU(82) 를 연결해 두어 실제로는
+  // 회전하지 않았다. scrcpy 의 ROTATE_DEVICE(11) 가 제대로 된 경로다.
+  rotateDevice() {
+    if (!this.controlSock || this.controlSock.destroyed) return
+    try { this.controlSock.write(Buffer.from([11])) } catch (e) {
+      this.log('회전 요청 실패: ' + e.message)
+    }
+  }
+
+  // 단말의 물리 키보드 레이아웃 설정 화면을 연다. UHID 최초 사용 시 1회 필요하다.
+  openHardKeyboardSettings() {
+    if (!this.controlSock || this.controlSock.destroyed) return
+    try { this.controlSock.write(Buffer.from([15])) } catch { }
+  }
+
   _jarVer(p) {
-    const m = (p || '').match(/v?(\d+\.\d+(?:\.\d+)?)/)
+    const m = path.basename(p || '').match(/v?(\d+\.\d+(?:\.\d+)?)/)
     return m ? m[1] : null
+  }
+
+  // 버전을 불가능한 값으로 주고 서버를 띄우면, 서버가 자기 버전을 에러에 실어 거부한다:
+  //   "The server version (4.1) does not match the client (0)"
+  // 이걸 되받아 실제 버전을 알아낸다. 릴리스마다 상수를 갱신할 필요가 없어진다.
+  _probeJarVer(serial) {
+    return new Promise(resolve => {
+      execFile(this.adbPath, [
+        '-s', serial, 'shell',
+        'CLASSPATH=/data/local/tmp/scrcpy-server.jar',
+        'app_process', '/', 'com.genymobile.scrcpy.Server', '0',
+      ], { timeout: 10000 }, (err, stdout, stderr) => {
+        const out = `${stdout || ''}${stderr || ''}${err?.message || ''}`
+        const m = out.match(/server version \((\d+\.\d+(?:\.\d+)?)\)/i)
+        resolve(m ? m[1] : null)
+      })
+    })
   }
 
   // ── 중지 ─────────────────────────────────────────────────────
   async stop() {
     this.running = false
+    if (this.keyboardMode === 'uhid') this.uhidDestroy()   // 소켓 닫기 전에 보내야 한다
+    this.keyboardMode = 'clipboard'
+    // 캐시를 비우지 않으면 다음 세션에서 이전 해상도/모드가 먼저 전송된다
+    this._metaJson = null
+    this._modeJson = null
     this.adbSock?.destroy(); this.adbSock = null
     this.controlSock?.destroy(); this.controlSock = null
     this.srvProc?.kill(); this.srvProc = null

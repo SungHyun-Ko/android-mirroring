@@ -1109,7 +1109,12 @@ async function toggleLogcat() {
 // iOS 전용: syslog 를 특정 프로세스로 좁힌다. 빈 값이면 --quiet 만 적용된다.
 // (Android 의 '현재 앱만' 필터에 대응하지만, iOS 는 포그라운드 앱을 알 수 없어
 //  사용자가 직접 고른다 — 그 목록은 ios:processes 로 얻는다)
-let iosLogProcess = ''
+// 기본값을 'Runner' 로 둔다. Flutter 가 Xcode 프로젝트를 Runner 로 만들어서
+// **모든 Flutter iOS 앱의 프로세스 이름이 Runner** 이고, 여기서 QA 하는 대상이
+// 그쪽이다. 필터 없이 붙으면 초당 1,300줄이 쏟아져 쓸 수가 없으므로, 연결하자마자
+// 걸린 상태로 시작하는 편이 낫다. 다른 앱을 보려면 드롭다운에서 바꾸면 된다.
+const IOS_DEFAULT_PROCESS = 'Runner'
+let iosLogProcess = IOS_DEFAULT_PROCESS
 
 async function setIosLogProcess(name) {
   iosLogProcess = name || ''
@@ -1136,13 +1141,16 @@ async function syncLogControls() {
 
   sel.innerHTML = '<option value="">전체 프로세스 (시끄러움)</option>'
   const r = await window.db.iosProcesses(state.serial)
-  if (!r.ok) return
-  // 566개쯤 돌아온다. 이름순으로 정렬하고 중복을 접어 고를 수 있게 만든다.
-  const names = [...new Set(r.processes.map(p => p.name))].sort((a, b) => a.localeCompare(b))
+  const running = r.ok ? [...new Set(r.processes.map(p => p.name))] : []
+  // 목록은 '실행 중'인 프로세스만 담긴다. 기본값(Runner)과 현재 선택값은 앱이 아직
+  // 안 떠 있어도 고를 수 있어야 하므로 없으면 채워 넣는다 — 안 그러면 select 가
+  // 빈 선택 상태로 보이면서 실제로는 필터가 걸려 있는 혼란이 생긴다.
+  const names = [...new Set([IOS_DEFAULT_PROCESS, iosLogProcess, ...running].filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b))
   for (const n of names) {
     const o = document.createElement('option')
     o.value = n
-    o.textContent = n
+    o.textContent = running.includes(n) ? n : `${n} (실행 중 아님)`
     sel.appendChild(o)
   }
   sel.value = iosLogProcess

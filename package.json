@@ -6,7 +6,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
-    "check": "node --check public/renderer.js && node src/jira.js && node src/hid-keyboard.js && node src/mirror-bridge.js",
+    "check": "node --check public/renderer.js && node src/jira.js && node src/hid-keyboard.js && node src/mirror-bridge.js && node src/ios-device.js",
     "build:win": "electron-builder --win --publish never",
     "build:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --publish never",
     "build:linux": "electron-builder --linux --publish never",

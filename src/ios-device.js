@@ -88,17 +88,6 @@ function parseDeviceList(stdout) {
     .filter(s => /^[0-9A-Fa-f-]{20,}$/.test(s))
 }
 
-// `idevicesyslog pidlist` 는 `<pid> <name>` 을 줄마다 뱉는다 (실측 566줄).
-// 렌더러에서 프로세스를 골라 필터를 걸 수 있게 목록으로 만든다.
-function parsePidList(stdout) {
-  const out = []
-  for (const line of String(stdout || '').split('\n')) {
-    const m = /^\s*(\d+)\s+(.+?)\s*$/.exec(line)
-    if (m) out.push({ pid: Number(m[1]), name: m[2] })
-  }
-  return out
-}
-
 // `ideviceinfo` 는 `Key: value` 를 줄마다 뱉는다.
 function parseInfo(stdout) {
   const out = {}
@@ -130,7 +119,7 @@ function syslogArgs(udid, { process: proc, quiet = true } = {}) {
 
 module.exports = {
   SYSLOG_RE, LEVEL_MAP,
-  parseSyslogLine, toLogcatLine, parseDeviceList, parseInfo, parsePidList, syslogArgs,
+  parseSyslogLine, toLogcatLine, parseDeviceList, parseInfo, syslogArgs,
   create,
 }
 
@@ -186,15 +175,6 @@ function create({ resolveBin, onLog }) {
         return { ok: true, info: parseInfo(await run('ideviceinfo', ['-u', udid])) }
       } catch (e) {
         return { ok: false, message: e.message }
-      }
-    },
-
-    // 기기에서 돌고 있는 프로세스 목록. syslog 필터를 고르는 데 쓴다.
-    async processes(udid) {
-      try {
-        return { ok: true, processes: parsePidList(await run('idevicesyslog', ['-u', udid, 'pidlist'])) }
-      } catch (e) {
-        return { ok: false, message: e.message, processes: [] }
       }
     },
 
@@ -303,11 +283,6 @@ if (require.main === module) {
   assert.strictEqual(info.ProductVersion, '26.6')
   assert.strictEqual(info.WiFiAddress, 'aa:bb:cc')
 
-  // pidlist — `<pid> <name>`. 이름에 공백이 있을 수 있으니 뒤쪽을 통째로 받는다
-  assert.deepStrictEqual(
-    parsePidList('1 launchd\n 35 SpringBoard\n\n허튼 줄\n'),
-    [{ pid: 1, name: 'launchd' }, { pid: 35, name: 'SpringBoard' }])
-
   // syslog 인자: --quiet 가 기본이어야 한다 (필터 없이는 초당 1,300줄)
   assert.deepStrictEqual(syslogArgs('U'), ['-u', 'U', '-q'])
   assert.deepStrictEqual(syslogArgs('U', { quiet: false }), ['-u', 'U'])
@@ -317,5 +292,5 @@ if (require.main === module) {
     syslogArgs('U', { process: 'A|B', quiet: false }), ['-u', 'U', '-p', 'A|B'])
   assert.ok(!syslogArgs('U', { process: 'X' }).includes('-q'), '-p 와 -q 동시 사용 금지')
 
-  console.log('ios-device 자가진단 통과 — syslog 파싱/logcat 변환/기기목록/프로세스/인자')
+  console.log('ios-device 자가진단 통과 — syslog 파싱/logcat 변환/기기목록/정보/인자')
 }

@@ -83,7 +83,6 @@ contextBridge.exposeInMainWorld('db', {
   // 모듈이 logcat 형식으로 변환해 보내므로 채널과 리스너를 공유한다.
   iosDevices: () => ipcRenderer.invoke('ios:devices'),
   iosInfo: (udid) => ipcRenderer.invoke('ios:info', udid),
-  iosProcesses: (udid) => ipcRenderer.invoke('ios:processes', udid),
   iosSyslogStart: (opts) => ipcRenderer.invoke('ios:syslog-start', opts),
   iosSyslogStop: () => ipcRenderer.invoke('ios:syslog-stop'),
 

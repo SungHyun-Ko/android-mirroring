@@ -732,7 +732,6 @@ function getIos() {
 
 ipcMain.handle('ios:devices', () => getIos().devices())
 ipcMain.handle('ios:info', (_, udid) => getIos().info(udid))
-ipcMain.handle('ios:processes', (_, udid) => getIos().processes(udid))
 
 // syslog 는 모듈에서 logcat threadtime 형식으로 변환되어 나오므로 **기존
 // logcat:data / logcat:stopped 채널을 그대로 쓴다.** 렌더러의 LogCat 패널과

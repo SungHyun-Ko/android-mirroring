@@ -861,6 +861,16 @@ const LOG_PRESETS = {
       /\bANR in\b|Input dispatching timed out|Reason:.*(ANR|not responding)/i,
     ],
   },
+  // iOS 전용. `-p Runner` 로 프로세스를 좁혀도 그 안에서 Apple 프레임워크가 내는
+  // 로그가 대부분이다 — 실측 15초에 Runner 4,798줄 중 CoreFoundation 1,806 /
+  // UIKitCore 1,030 / libAccessibility 577 … 이런 식이다.
+  // **Dart 코드의 출력은 서브시스템이 `Flutter` 이고 메시지가 `flutter:` 로 시작한다**
+  // (ios-device.js 가 태그를 `Runner/Flutter` 로 만든다). 크래시 기록자(ReportCrash /
+  // osanalyticshelper)의 줄도 함께 통과시킨다 — 앱이 죽는 순간은 그쪽에만 남는다.
+  appOnly: {
+    label: '앱 로그만 (iOS)',
+    res: [/\s[VDIWEFA]\s+\S*\/Flutter:|:\s*flutter:\s|\s[VDIWEFA]\s+(ReportCrash|osanalyticshelper)[/:]/],
+  },
 }
 let logcatPreset = ''
 
@@ -1100,60 +1110,53 @@ async function toggleLogcat() {
   // iOS syslog 는 필터가 없으면 초당 1,000줄이 넘어 LOGCAT_MAX_LINES 를 몇 초 만에
   // 넘긴다. 기기 쪽 --quiet 를 켜고, 프로세스가 지정돼 있으면 그걸로 좁힌다.
   const r = isIos()
-    ? await window.db.iosSyslogStart({ udid: state.serial, process: iosLogProcess, quiet: true })
+    ? await window.db.iosSyslogStart({ udid: state.serial, process: IOS_LOG_PROCESS, quiet: true })
     : await window.db.startLogcat(state.serial)
   if (!r.ok) { showToast('로그 시작 실패: ' + (r.message || ''), true); return }
   setLogcatRunning(true)
 }
 
-// iOS 전용: syslog 를 특정 프로세스로 좁힌다. 빈 값이면 --quiet 만 적용된다.
-// (Android 의 '현재 앱만' 필터에 대응하지만, iOS 는 포그라운드 앱을 알 수 없어
-//  사용자가 직접 고른다 — 그 목록은 ios:processes 로 얻는다)
-// 기본값을 'Runner' 로 둔다. Flutter 가 Xcode 프로젝트를 Runner 로 만들어서
-// **모든 Flutter iOS 앱의 프로세스 이름이 Runner** 이고, 여기서 QA 하는 대상이
-// 그쪽이다. 필터 없이 붙으면 초당 1,300줄이 쏟아져 쓸 수가 없으므로, 연결하자마자
-// 걸린 상태로 시작하는 편이 낫다. 다른 앱을 보려면 드롭다운에서 바꾸면 된다.
-const IOS_DEFAULT_PROCESS = 'Runner'
-let iosLogProcess = IOS_DEFAULT_PROCESS
+// **Flutter 앱만 QA 하므로 프로세스를 Runner 로 고정한다.** Flutter 가 Xcode
+// 프로젝트를 Runner 로 만들어서 모든 Flutter iOS 앱의 프로세스 이름이 Runner 다.
+// 필터 없이 붙으면 초당 약 1,300줄이 쏟아져 LOGCAT_MAX_LINES(3,000)를 몇 초 만에
+// 넘기므로, 연결하는 순간부터 걸려 있어야 한다.
+//
+// **크래시는 앱 프로세스가 아니라 ReportCrash / osanalyticshelper 가 기록한다.**
+// Runner 만 잡으면 앱이 죽는 순간의 기록을 통째로 놓치므로 같이 받는다(`-p` 는 `|`
+// 로 여러 프로세스를 받는다). 이 둘은 평소엔 조용해서 물량 부담이 없다.
+const IOS_LOG_PROCESS = 'Runner|ReportCrash|osanalyticshelper'
 
-async function setIosLogProcess(name) {
-  iosLogProcess = name || ''
-  if (logcatRunning) {   // 필터는 기기 쪽 인자라 재시작해야 적용된다
-    await window.db.iosSyslogStop()
-    setLogcatRunning(false)
-    await toggleLogcat()
-  }
+// 프리셋 드롭다운은 플랫폼마다 쓸 수 있는 항목이 다르다.
+//  - http / crash 프리셋의 정규식은 OkHttp·AndroidRuntime 같은 **Android 전용** 이라
+//    iOS 에서는 절대 안 걸린다. 띄워두면 고르고 빈 화면만 보게 된다.
+//  - iOS 는 syslog 를 이미 `-p` 로 좁혀 받으므로 '필터 없음' 이 실제로는 필터가 걸린
+//    상태다. 그 이름을 그대로 두면 오해를 부른다 — 무엇이 보이는지로 이름을 바꾼다.
+const PRESET_OPTIONS = {
+  android: [['', '필터 없음'], ['http', 'HTTP 통신'], ['crash', '예외 · 크래시 · ANR']],
+  ios: [['appOnly', '앱 로그 · 크래시'], ['', '시스템 로그까지 전부']],
 }
 
-// 플랫폼에 따라 로그 도구 표시를 바꾼다. Android 의 '현재 앱' 버튼은 포그라운드
-// 조회에 의존하므로 iOS 에서는 감추고, 대신 프로세스 선택을 띄운다.
+// 플랫폼에 따라 로그 도구 표시를 바꾼다.
 async function syncLogControls() {
-  const sel = $('iosLogProcess')
+  const presetSel = $('logcatPreset')
+  if (presetSel) {
+    const opts = PRESET_OPTIONS[isIos() ? 'ios' : 'android']
+    presetSel.innerHTML = opts
+      .map(([v, l]) => `<option value="${v}">${escapeHtml(l)}</option>`).join('')
+    // iOS 는 앱 로그를 기본으로 띄운다. 시스템 소음이 99%(실측 4,798줄 중 Dart 는 480줄)라
+    // 기본이 전체면 정작 봐야 할 줄이 묻힌다.
+    logcatPreset = isIos() ? 'appOnly' : ''
+    presetSel.value = logcatPreset
+    renderLogcat()
+  }
   const appBtn = $('logFilterBtn')
+  // '현재 실행중인 앱' 버튼은 포그라운드 패키지 조회(adb)에 의존한다. iOS 는 포그라운드
+  // 앱을 알 수 없고, 애초에 프로세스를 Runner 로 고정해 붙으므로 감춘다.
   if (appBtn) appBtn.style.display = isIos() ? 'none' : ''
   // 기기 제어 툴바(전원·볼륨·회전·캡처·녹화)는 전부 adb 전용이다. iOS 에서 누르면
   // 실패 토스트만 뜨므로 아예 감춘다.
   const bar = $('deviceBar')
   if (bar) bar.style.display = isIos() ? 'none' : ''
-  if (!sel) return
-  sel.style.display = isIos() ? '' : 'none'
-  if (!isIos()) return
-
-  sel.innerHTML = '<option value="">전체 프로세스 (시끄러움)</option>'
-  const r = await window.db.iosProcesses(state.serial)
-  const running = r.ok ? [...new Set(r.processes.map(p => p.name))] : []
-  // 목록은 '실행 중'인 프로세스만 담긴다. 기본값(Runner)과 현재 선택값은 앱이 아직
-  // 안 떠 있어도 고를 수 있어야 하므로 없으면 채워 넣는다 — 안 그러면 select 가
-  // 빈 선택 상태로 보이면서 실제로는 필터가 걸려 있는 혼란이 생긴다.
-  const names = [...new Set([IOS_DEFAULT_PROCESS, iosLogProcess, ...running].filter(Boolean))]
-    .sort((a, b) => a.localeCompare(b))
-  for (const n of names) {
-    const o = document.createElement('option')
-    o.value = n
-    o.textContent = running.includes(n) ? n : `${n} (실행 중 아님)`
-    sel.appendChild(o)
-  }
-  sel.value = iosLogProcess
 }
 
 function clearLogcat() {

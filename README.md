@@ -96,16 +96,30 @@ Android 10+는 보안상 백그라운드 클립보드 접근을 차단합니다.
 폰에 [Clipper](https://github.com/majido/clipper) 앱을 설치하면 양방향 공유가 가능하고,
 없으면 "PC → Android" 방향은 scrcpy 미러링 창에서 Ctrl+V로 대신할 수 있습니다.
 
+## macOS 설치 (배포본 받는 사람용)
+
+터미널에 아래 한 줄을 붙여넣으면 받기·열기가 한 번에 됩니다. 열린 창에서 앱을 **응용 프로그램(Applications)** 폴더로 끌어다 놓으면 끝입니다.
+
+```bash
+curl -L -o ~/Downloads/DroidBridge.dmg <배포주소> && open ~/Downloads/DroidBridge.dmg
+```
+
+`<배포주소>` 는 사내 배포 담당자에게 받으세요. 버전이 올라갈 때마다 파일명이 바뀌므로 README 에 적어두지 않습니다.
+
+> **아키텍처를 맞춰 받아야 합니다.** arm64(Apple Silicon)와 x64(Intel) dmg 가 따로 있고, 잘못 받으면 실행 시 Rosetta 설치 창이 뜹니다. 내 맥 확인: **Apple 메뉴 → 이 Mac에 관하여** 에서 "칩: Apple M…" 이면 arm64, "프로세서: Intel…" 이면 x64. 터미널로는 `uname -m` → `arm64` / `x86_64`.
+
+**반드시 터미널(`curl`)로 받으세요.** 같은 주소라도 Safari·Chrome·Slack·메일로 받으면 macOS 가 파일에 quarantine 플래그를 붙여 게이트키퍼 경고가 뜹니다. `curl`·`scp`·USB·파일서버로 받으면 플래그가 붙지 않아 경고 없이 바로 실행됩니다. 플래그 확인은 `xattr -l ~/Downloads/DroidBridge.dmg` — `com.apple.quarantine` 이 없으면 정상입니다.
+
 ## 문제 해결
-- **macOS: '손상되었기 때문에 열 수 없습니다' 오류 해결 방법**: 
-  애플 개발자 인증서 서명 없이 빌드된 앱을 인터넷(Slack, 브라우저 등)에서 다운로드하면 macOS 게이트키퍼 보안에 의해 차단되며 위 에러가 발생합니다. 실제 파일이 손상된 것이 아니며, 아래 단계를 거쳐 쉽게 해결할 수 있습니다.
-  1. DMG 파일을 실행하여 DroidBridge를 **응용 프로그램 (Applications)** 폴더로 드래그하여 설치합니다.
-  2. 맥의 **터미널 (Terminal)** 앱을 실행합니다.
-  3. 아래 명령어를 입력하고 엔터를 칩니다:
-     ```bash
-     xattr -cr /Applications/DroidBridge.app
-     ```
-  4. 이제 응용 프로그램 폴더에서 DroidBridge를 실행하시면 에러 없이 즉시 정상 실행됩니다.
+- **macOS: 게이트키퍼가 실행을 막을 때**:
+  브라우저·Slack·메일로 받으면 quarantine 플래그가 붙어 차단됩니다. 파일이 손상된 것이 아닙니다. 애초에 위 **macOS 설치** 항목처럼 `curl` 로 받으면 이 문제가 생기지 않습니다.
+  - *"Apple은 … 악성 코드가 없음을 확인할 수 없습니다"* — `npm run release:mac` 으로 만든 **서명 O / 공증 X** 빌드입니다. **"휴지통으로 이동"을 누르지 마세요.** "완료"를 누른 뒤 **시스템 설정 → 개인정보 보호 및 보안** 에서 아래로 스크롤해 **"그래도 열기"** 를 누릅니다. (macOS 15 부터는 우클릭 → 열기로는 통과되지 않습니다.)
+  - *"손상되었기 때문에 열 수 없습니다"* — 서명이 아예 없거나 깨진 빌드입니다(`npm run build:mac`, CI 아티팩트). 이 경우 위 방법으로도 안 되고 아래가 필요합니다.
+  - 어느 쪽이든 터미널 한 줄로 해결됩니다. 설치(응용 프로그램 폴더로 드래그) 후:
+    ```bash
+    xattr -cr /Applications/DroidBridge.app
+    ```
+  - 경고 자체를 없애려면 배포 담당자가 `npm run notarize:mac` 으로 공증된 빌드를 올려야 합니다.
 - **기기가 안 보일 때**: `bin/adb devices`로 직접 확인. `unauthorized`면 폰에서 디버깅 허용 팝업 확인
 - **scrcpy 창이 안 뜰 때**: `bin/scrcpy --serial <시리얼>`로 직접 실행해 오류 메시지 확인
 - **Windows에서 adb.exe 실행 오류**: `AdbWinApi.dll` 두 개가 같은 폴더에 있는지 확인

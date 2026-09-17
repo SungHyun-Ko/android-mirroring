@@ -53,7 +53,11 @@ UI 는 **3컬럼**이다: 도구 패널 · 디바이스(canvas) · LogCat. 마�
 
 주의할 점:
 
-- **프로토콜 상수는 실측값이다.** `_pipe()` 안의 `DEVICE_NAME_LEN = 65`, `SESSION_META_LEN = 12` 가 실제 동작하는 값이고, 같은 파일 상단의 파일 주석(64 / 8)은 낡았다. 바꾸기 전에 `[raw]` 로그로 바이트를 다시 재보라.
+- **프로토콜 상수는 `[raw]` 로그로 실측해서 정한다. 그리고 scrcpy-server 버전마다 다를 수 있다.** 코드의 `DEVICE_NAME_LEN = 65`(더미 1B + 이름 64B), `CODEC_ID_LEN = 4`, `SESSION_META_LEN = 12`(offset 4=width, 8=height)는 **다운로드본 v4.1 + SM-G973N 조합에서 실측 확인**했다. 반면 파일 상단 주석은 v4.0 기준으로 `flags 없이 8B` 라고 적혀 있다 — **둘 다 실제로 관측된 적이 있다.**
+  - v4.1 실측: 코덱 뒤 12B = `80000000 | 0000025e(606) | 00000500(1280)` → 앞 4B 는 flags, 그래서 offset 4/8 이 맞다.
+  - 다른 기기(iMac, SM-G981N)에서는 코덱 뒤가 `00000240(576) | 00000500(1280)` 8B 로 관측됐다 — flags 가 없다. 이때 offset 4/8 로 읽으면 width 에 height 가, height 에 프레임 헤더 PTS 상위 4B 인 `0x80000000`(=2147483648)이 들어간다.
+  - **증상: 해상도 로그에 `×2147483648` 또는 `2147483648×` 이 보이면 이 오프셋 문제다.** 프레임 경계까지 밀려 SPS/PPS 가 깨지므로 겉으로는 디코더 쪽 `A key frame is required after configure()` 로 나타나 원인을 놓치기 쉽다.
+  - 원인 후보 1순위는 **jar 출처**다. `ensureJar()` 는 `/opt/homebrew/share/scrcpy/scrcpy-server` 등 **시스템 설치본을 GitHub 다운로드본보다 먼저** 집는다(`mirror-bridge.js:131-135`). brew 로 scrcpy 를 깐 기기는 다른 버전의 jar 를 쓰게 되므로 헤더 레이아웃이 달라질 수 있다. 문제가 생기면 로그의 `jar @ ...` 줄로 어느 jar 를 썼는지부터 확인할 것.
 - 비디오 소켓과 제어 소켓은 **같은 forward 포트로 순서대로 두 번 connect** 해서 얻는다. 둘 다 성공해야 스트리밍이 시작된다. `controlSock` 은 현재 **쓰기 전용**이다 — 역방향 스트림(기기 클립보드 응답 등)은 아직 아무도 읽지 않는다.
 - 디코더 코덱이 `avc1.640020` 으로 하드코딩되어 있고, config 패킷(SPS+PPS)은 `configNalBuffer` 에 캐시해뒀다가 IDR 앞에 수동으로 붙여야 한다 (`feedFrame()`). VideoDecoder 는 description 없이 config 만으로는 디코딩하지 못한다.
 - jar 버전 문자열은 `app_process` 인자로 그대로 넘어가고 **서버가 자기 버전과 다르면 기동을 거부한다** (`IllegalArgumentException: The server version (4.1) does not match the client (...)`). 버전은 ① `ensureJar()` 의 다운로드 경로가 알려준 값 → ② `_jarVer()` 의 파일명 파싱 → ③ `_probeJarVer()` 가 서버에 직접 물어본 값 순으로 정해진다. ③ 덕분에 파일명에 버전이 없는 jar(`Windows_setup.ps1` 이 zip 에서 복사한 것, brew 설치본)도 그냥 동작하므로 **리네임은 필요 없다.** `FALLBACK_VER` 는 ③까지 실패했을 때만 쓰이는 최후값이라 정확할 필요가 없다.

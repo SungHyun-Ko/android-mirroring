@@ -34,6 +34,31 @@ const UHID_VENDOR_ID = 0x1209
 const UHID_PRODUCT_ID = 0xdb01
 const UHID_NAME = 'DroidBridge Keyboard'
 
+// 해상도로 말이 되는 값의 상한. scrcpy 는 max_size 로 축소해 보내므로 실제로는
+// 수천 이하지만, 8K 세로까지는 열어 둔다.
+const MAX_DIM = 8192
+const plausibleDim = v => v > 0 && v <= MAX_DIM
+
+/**
+ * codec_id 직후의 session_meta 에서 width/height 를 뽑는다.
+ *
+ * 길이를 상수로 박지 않는 이유: 서버 빌드마다 레이아웃이 다른 것이 실측으로 확인됐다.
+ *   - 8B  형태: [width][height]              (SM-G981N 에서 관측)
+ *   - 12B 형태: [flags][width][height]       (다운로드본 v4.1 + SM-G973N 에서 관측)
+ * 오프셋을 고정하면 한쪽을 맞추는 순간 다른 쪽이 깨진다. 해상도는 값 범위가 좁고
+ * flags 는 최상위 비트가 서 있어(0x80000000) 값만 보고도 구분된다.
+ *
+ * 12B 이상 들어온 뒤에 부를 것. 판별 불가면 null (호출부가 세션을 끊는다).
+ */
+function parseSessionMeta(buf) {
+  if (buf.length < 12) return null
+  const at0 = buf.readUInt32BE(0), at4 = buf.readUInt32BE(4), at8 = buf.readUInt32BE(8)
+  // 8B 형태를 먼저 본다. 뒤의 4B 는 프레임 헤더 PTS 상위라 보통 0x80000000/0x40000000 이다.
+  if (plausibleDim(at0) && plausibleDim(at4)) return { width: at0, height: at4, consumed: 8 }
+  if (plausibleDim(at4) && plausibleDim(at8)) return { width: at4, height: at8, consumed: 12 }
+  return null
+}
+
 class MirrorBridge {
   constructor({ adbPath, binDir, onLog }) {
     this.adbPath = adbPath
@@ -377,13 +402,12 @@ class MirrorBridge {
     let pendingFrameSize = 0
     const meta = {}
 
-    // ── scrcpy v4.0 프로토콜 헤더 상수 ──────────────────────────────────
-    // 실측 데이터 분석 결과:
+    // ── scrcpy 프로토콜 헤더 상수 ──────────────────────────────────────
     //   누적 65B 후 코덱(h264) 4B 수신 → device name field = 65 bytes
-    //   session_meta = flags(4) + width(4) + height(4) = 12 bytes
-    const DEVICE_NAME_LEN = 65   // v4.0: 64 bytes name + 1 byte separator
+    //   session_meta 길이는 서버 빌드마다 달라서 상수로 두지 않는다 (parseSessionMeta 참고)
+    const DEVICE_NAME_LEN = 65   // 더미 1B + 이름 64B
     const CODEC_ID_LEN = 4
-    const SESSION_META_LEN = 12   // flags(4) + width(4) + height(4)
+    const SESSION_META_PEEK = 12  // 판별에 필요한 최대 길이
     const FRAME_HEADER_LEN = 12   // pts(8) + size(4)
 
     let totalReceived = 0
@@ -420,13 +444,18 @@ class MirrorBridge {
           }
 
           case 'sessionMeta': {
-            if (buf.length < SESSION_META_LEN) { go = false; break }
-            // session_meta = flags(4) + width(4) + height(4)
-            // flags는 사용하지 않으므로 offset 4, 8에서 width/height 읽기
-            meta.width = buf.readUInt32BE(4)
-            meta.height = buf.readUInt32BE(8)
-            this.log(`해상도: ${meta.width}×${meta.height}`)
-            buf = buf.subarray(SESSION_META_LEN)
+            if (buf.length < SESSION_META_PEEK) { go = false; break }
+            const m = parseSessionMeta(buf)
+            if (!m) {
+              this.log(`해상도 파싱 실패 — 헤더 앞 12B: ${buf.subarray(0, 12).toString('hex')}`)
+              sock.destroy()
+              go = false
+              break
+            }
+            meta.width = m.width
+            meta.height = m.height
+            this.log(`해상도: ${meta.width}×${meta.height} (meta ${m.consumed}B)`)
+            buf = buf.subarray(m.consumed)
             state = 'frameHeader'
             this._metaJson = JSON.stringify({ type: 'meta', ...meta })
             this._frameCnt = 0
@@ -666,3 +695,37 @@ class MirrorBridge {
 }
 
 module.exports = MirrorBridge
+module.exports.parseSessionMeta = parseSessionMeta
+
+// ── 자가진단: node src/mirror-bridge.js ───────────────────────
+if (require.main === module) {
+  const assert = require('assert')
+  const hex = s => Buffer.from(s.replace(/\s/g, ''), 'hex')
+
+  // 실측값 1 — iMac / SM-G981N: 코덱 뒤가 곧바로 [w][h], 이어서 프레임 헤더 PTS(0x80000000)
+  assert.deepStrictEqual(
+    parseSessionMeta(hex('00000240 00000500 80000000')),
+    { width: 576, height: 1280, consumed: 8 }, '8B 레이아웃(576×1280) 판별 실패')
+
+  // 실측값 2 — 다운로드본 v4.1 / SM-G973N: 앞에 flags(0x80000000)가 붙는다
+  assert.deepStrictEqual(
+    parseSessionMeta(hex('80000000 0000025e 00000500')),
+    { width: 606, height: 1280, consumed: 12 }, '12B 레이아웃(606×1280) 판별 실패')
+
+  // 키프레임 PTS(0x40000000)가 뒤따르는 8B 형태도 같아야 한다
+  assert.deepStrictEqual(
+    parseSessionMeta(hex('00000240 00000500 40000000')),
+    { width: 576, height: 1280, consumed: 8 })
+
+  // 12B 미만이면 판단하지 않는다 (더 받아야 한다)
+  assert.strictEqual(parseSessionMeta(hex('00000240 00000500')), null)
+
+  // 양쪽 다 말이 안 되면 null — 호출부가 세션을 끊어 조용한 오작동을 막는다
+  assert.strictEqual(parseSessionMeta(hex('80000000 80000000 80000000')), null)
+  // flags 가 0 이어도 (0 은 해상도가 될 수 없으므로) 12B 로 넘어가야 한다
+  assert.deepStrictEqual(
+    parseSessionMeta(hex('00000000 0000025e 00000500')),
+    { width: 606, height: 1280, consumed: 12 })
+
+  console.log('mirror-bridge 자가진단 통과 — session_meta 8B/12B 레이아웃 판별')
+}

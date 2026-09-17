@@ -7,8 +7,10 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "build:win": "electron-builder --win --publish never",
-    "build:mac": "electron-builder --mac --publish never",
-    "build:linux": "electron-builder --linux --publish never"
+    "build:mac": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac --publish never",
+    "build:linux": "electron-builder --linux --publish never",
+    "release:mac": "CSC_NAME=\"Zero Soft Company Limited (A4FZ48VKPF)\" electron-builder --mac --publish never",
+    "notarize:mac": "set -a && . ./.notarize.env && set +a && npm run release:mac"
   },
   "devDependencies": {
     "electron": "^29.0.0",
@@ -16,7 +18,7 @@
   },
   "build": {
     "appId": "com.droidbridge.app",
-    "productName": "안드로이드 미러링",
+    "productName": "DroidBridge",
     "directories": {
       "output": "dist"
     },
@@ -35,7 +37,8 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "runAfterFinish": true
+      "runAfterFinish": true,
+      "shortcutName": "안드로이드 미러링"
     },
     "mac": {
       "target": {
@@ -45,7 +48,10 @@
           "arm64"
         ]
       },
-      "artifactName": "${productName}-${version}-${arch}.${ext}"
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "extendInfo": {
+        "CFBundleDisplayName": "안드로이드 미러링"
+      }
     },
     "linux": {
       "target": "AppImage"

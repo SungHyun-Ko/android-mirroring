@@ -21,3 +21,6 @@ yarn-error.log*
 
 # 에이전트 도구 로컬 상태 (커밋 대상 아님)
 .omc/
+
+# 공증 자격증명 (로컬 전용)
+.notarize.env

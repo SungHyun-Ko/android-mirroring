@@ -43,7 +43,7 @@ function errText(r) {
     seen.add(body)
     msgs.push(m)
   }
-  if (r.status === 401) msgs.push('이메일 또는 API 토큰을 확인해 주세요')
+  if (r.status === 401) msgs.push('인증에 실패했습니다 — API 토큰이 만료되었거나 이메일이 다릅니다')
   if (r.status === 404) msgs.push('사이트 주소 또는 프로젝트 키를 확인해 주세요')
   return msgs.join(' / ') || `HTTP ${r.status}`
 }
@@ -114,7 +114,7 @@ async function testConn(cfg) {
   if (miss) return { ok: false, message: miss }
   try {
     const r = await jiraFetch(cfg, '/rest/api/2/project/search?maxResults=50&orderBy=key')
-    if (!r.ok) return { ok: false, message: errText(r) }
+    if (!r.ok) return { ok: false, message: errText(r), status: r.status }
     // 키만 보면 무슨 프로젝트인지 모르니 이름도 같이 넘긴다
     const projects = (r.body.values || []).map(p => ({ key: p.key, name: p.name || p.key }))
     const keys = projects.map(p => p.key)
@@ -129,6 +129,20 @@ async function testConn(cfg) {
     return { ok: true, name, keys, projects, total: r.body.total ?? keys.length }
   } catch (e) {
     return { ok: false, message: `연결 실패: ${e.message}` }
+  }
+}
+
+// 등록 팝업을 열 때마다 토큰이 아직 살아 있는지 확인하는 용도. 가장 가벼운 요청으로
+// 친다(프로젝트 1건). /myself 는 스코프형 토큰에서 권한이 빠질 수 있어 쓰지 않는다.
+async function pingAuth(cfg) {
+  const miss = missingFields(cfg)
+  if (miss) return { ok: false, message: miss }
+  try {
+    const r = await jiraFetch(cfg, '/rest/api/2/project/search?maxResults=1')
+    if (!r.ok) return { ok: false, message: errText(r), status: r.status }
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, message: `연결 실패: ${e.message}`, status: 0 }
   }
 }
 
@@ -149,7 +163,7 @@ async function listIssueTypes(cfg, projectKey) {
   if (miss) return { ok: false, message: miss }
   try {
     const r = await jiraFetch(cfg, `/rest/api/2/project/${encodeURIComponent(key)}`)
-    if (!r.ok) return { ok: false, message: errText(r) }
+    if (!r.ok) return { ok: false, message: errText(r), status: r.status }
     const list = (r.body.issueTypes || []).filter(t => !t.subtask)   // 하위 작업은 부모 없이는 못 만든다
     return { ok: true, types: list.map(t => t.name), items: list.map(t => ({ id: t.id, name: t.name })) }
   } catch (e) {
@@ -176,7 +190,7 @@ async function listCreateFields(cfg, projectKey, issueTypeId) {
   try {
     const r = await jiraFetch(cfg,
       `/rest/api/3/issue/createmeta/${encodeURIComponent(key)}/issuetypes/${encodeURIComponent(issueTypeId)}?maxResults=100`)
-    if (!r.ok) return { ok: false, message: errText(r) }
+    if (!r.ok) return { ok: false, message: errText(r), status: r.status }
 
     // 앱이 이미 따로 채우는 것(요약·설명·프로젝트·이슈타입·첨부)과 쓰지 않기로 한 것을 뺀다.
     // 담당자는 별도 줄로 항상 띄우므로 여기서도 제외한다.
@@ -229,7 +243,7 @@ async function searchAssignable(cfg, projectKey, query) {
   try {
     const r = await jiraFetch(cfg,
       `/rest/api/3/user/assignable/search?project=${encodeURIComponent(key)}&query=${encodeURIComponent(query || '')}&maxResults=50`)
-    if (!r.ok) return { ok: false, message: errText(r) }
+    if (!r.ok) return { ok: false, message: errText(r), status: r.status }
     const users = (Array.isArray(r.body) ? r.body : [])
       .filter(u => u.accountId && u.active !== false)
       .map(u => ({
@@ -341,7 +355,7 @@ async function attachFile(cfg, key, filename, buf) {
       headers: { 'X-Atlassian-Token': 'no-check' },
       makeBody,
     })
-    if (!r.ok) return { ok: false, message: errText(r) }
+    if (!r.ok) return { ok: false, message: errText(r), status: r.status }
     return { ok: true }
   } catch (e) {
     return { ok: false, message: `첨부 실패: ${e.message}` }
@@ -353,7 +367,7 @@ function baseCacheClearForTest() { baseCache.clear(); cloudIdCache.clear() }
 
 module.exports = {
   DEFAULT_SITE, authHeader, apiBase, errText, missingFields, buildIssueBody,
-  createIssue, attachFile, testConn, listIssueTypes, listCreateFields, buildExtraFields, searchAssignable,
+  createIssue, attachFile, testConn, listIssueTypes, listCreateFields, buildExtraFields, searchAssignable, pingAuth,
 }
 
 // ── 자가진단: node src/jira.js ────────────────────────────────
@@ -378,6 +392,8 @@ if (require.main === module) {
   assert.ok(!('description' in buildIssueBody({ project: 'A', summary: 's' }).fields))
 
   assert.strictEqual(errText({ status: 400, body: { errors: { summary: '필수입니다' } } }), 'summary: 필수입니다')
+  // 토큰 만료도 401 로 온다 — 문구에 '만료'가 있어야 사용자가 원인을 안다
+  assert.ok(errText({ status: 401, body: {} }).includes('만료'))
   assert.ok(errText({ status: 401, body: {} }).includes('API 토큰'))
   assert.ok(errText({ status: 404, body: {} }).includes('프로젝트 키'))
 
@@ -531,6 +547,18 @@ if (require.main === module) {
     // 추가 필드가 생성 본문에 합쳐지는지
     const body2 = buildIssueBody({ project: 'A', issueType: '버그', summary: 's', extra })
     assert.deepStrictEqual(body2.fields.priority, { id: '3' })
+
+    // 토큰 만료: 조회 함수들이 status 401 과 '만료' 문구를 같이 돌려줘야 렌더러가 안내할 수 있다
+    baseCacheClearForTest()
+    global.fetch = async () => mk(401, { errorMessages: ['Client must be authenticated'] })
+    const cfgOld = { site: 'expired.atlassian.net', email: 'a@b.c', token: 'old' }
+    for (const [name, r] of [
+      ['listIssueTypes', await listIssueTypes(cfgOld, 'ZEROTALK')],
+      ['pingAuth', await pingAuth(cfgOld)],
+    ]) {
+      assert.strictEqual(r.status, 401, name + ': status 가 안 넘어온다')
+      assert.ok(r.message.includes('만료'), name + ': 만료 안내가 없다 — ' + r.message)
+    }
 
     console.log('jira.js 자가진단 통과 — 주소 4 / 페이로드 5 / 오류문구 4 / 필수값 4 / 토큰 폴백 4 / 원인 안내 3 / 이슈타입 3 / 필드 7')
   })().catch(e => { console.error('자가진단 실패:', e.message); process.exit(1) })

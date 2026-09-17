@@ -93,25 +93,33 @@ function getMirror() {
 }
 
 // ── 윈도우 생성 ────────────────────────────────────────────────
-// 실행 높이이자 최소 높이. 화면이 작으면 작업 영역에 맞춰 줄인다 — 안 그러면 최소 높이가
+// 실행 크기이자 최소 크기. 화면이 작으면 작업 영역에 맞춰 줄인다 — 안 그러면 최소 크기가
 // 화면보다 커져 창을 아예 못 쓴다.
-function pickLaunchHeight() {
+function pickLaunchSize() {
   try {
     const { screen } = require('electron')
-    const avail = screen.getPrimaryDisplay().workAreaSize.height
-    return Math.min(900, Math.max(600, avail - 60))
+    const avail = screen.getPrimaryDisplay().workAreaSize
+    return {
+      width: Math.min(1600, Math.max(1100, avail.width - 60)),
+      height: Math.min(900, Math.max(600, avail.height - 60)),
+    }
   } catch {
-    return 900
+    return { width: 1600, height: 900 }
   }
 }
 
+// 처음 뜬 창 너비 = 최소 너비의 하한. 렌더러가 레이아웃을 재서 더 큰 값을 요구할 수는
+// 있어도(디바이스가 넓으면) 이보다 좁게는 못 내려간다.
+let launchWidth = 0
+
 function createWindow() {
-  const launchHeight = pickLaunchHeight()
+  const launch = pickLaunchSize()
+  launchWidth = launch.width
   mainWindow = new BrowserWindow({
-    // 처음 뜬 높이를 그대로 최소 높이로 삼는다 — 세로로는 더 줄일 수 없다.
-    // (가로 최소치만 렌더러가 레이아웃을 재서 window:set-min-size 로 갱신한다)
-    width: 1600, height: launchHeight,
-    minWidth: 1100, minHeight: launchHeight,
+    // 처음 뜬 크기를 그대로 최소 크기로 삼는다 — 가로·세로 모두 더 줄일 수 없다.
+    // (가로 최소치는 레이아웃이 더 넓게 요구하면 window:set-min-size 로 올라가기만 한다)
+    width: launch.width, height: launch.height,
+    minWidth: launch.width, minHeight: launch.height,
     autoHideMenuBar: true,   // Alt 를 눌러도 메뉴바가 나타나지 않게
     backgroundColor: '#0e0e10',
     icon: path.join(__dirname, '..', 'build', 'icon.png'),
@@ -337,6 +345,8 @@ ipcMain.handle('jira:save', (_, cfg) => {
 
 ipcMain.handle('jira:test', () => jira.testConn(loadJiraCfg()))
 
+ipcMain.handle('jira:ping', () => jira.pingAuth(loadJiraCfg()))
+
 ipcMain.handle('jira:issue-types', (_, projectKey) => jira.listIssueTypes(loadJiraCfg(), projectKey))
 
 
@@ -399,7 +409,8 @@ ipcMain.handle('window:set-min-size', (_, width) => {
   const [contentW] = mainWindow.getContentSize()
   const frameW = Math.max(0, winW - contentW)
 
-  const w = Math.round(width) + frameW
+  // 실행 시 너비가 하한이다 — 레이아웃이 더 넓게 요구할 때만 올라간다.
+  const w = Math.max(launchWidth, Math.round(width) + frameW)
   const [, minH] = mainWindow.getMinimumSize()
   mainWindow.setMinimumSize(w, minH)
   // 이미 그보다 좁으면 넓혀 준다 (setMinimumSize 만으로는 기존 창이 안 바뀐다)

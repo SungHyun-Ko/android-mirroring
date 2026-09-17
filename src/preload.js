@@ -54,6 +54,7 @@ contextBridge.exposeInMainWorld('db', {
   jiraLoad: () => ipcRenderer.invoke('jira:load'),
   jiraSave: (cfg) => ipcRenderer.invoke('jira:save', cfg),
   jiraTest: () => ipcRenderer.invoke('jira:test'),
+  jiraPing: () => ipcRenderer.invoke('jira:ping'),
   jiraIssueTypes: (projectKey) => ipcRenderer.invoke('jira:issue-types', projectKey),
   jiraFields: (opts) => ipcRenderer.invoke('jira:fields', opts),
   jiraAssignable: (opts) => ipcRenderer.invoke('jira:assignable', opts),

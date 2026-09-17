@@ -1822,8 +1822,13 @@ function changeScreenSize() {
 
   // 가로만 막는다 — 세로 최소치는 main 이 '실행 시 높이'로 고정해 두었다.
   // 도구(접혔으면 좁게) + 현재 디바이스 + LogCat 최소폭 + 여백
+  //
+  // 디바이스 폭은 폰 화면 w 가 아니라 '컬럼의 실제 폭'을 재서 쓴다. 창이 낮으면 폰은
+  // 좁아지는데 위쪽 아이콘 툴바는 그대로라 컬럼이 폰보다 넓어지고, w 로 계산하면 그
+  // 차이만큼 최소 너비가 모자라 LogCat 오른쪽 패딩이 잘려 나간다.
+  const colW = Math.ceil(frame.parentElement.getBoundingClientRect().width) || w
   const toolW = (isToolPanelCollapsed() ? TOOL_COLLAPSED_WIDTH : TOOL_WIDTH) + LAYOUT_GAP
-  const minW = Math.ceil(toolW + w + LOGCAT_MIN_WIDTH + LAYOUT_GAP + LAYOUT_PAD * 2)
+  const minW = Math.ceil(toolW + Math.max(colW, w) + LOGCAT_MIN_WIDTH + LAYOUT_GAP + LAYOUT_PAD * 2)
   if (minW !== lastMinWidth) {
     lastMinWidth = minW
     window.db.setMinSize(minW)
@@ -1948,7 +1953,8 @@ async function refreshJiraFields() {
   if (!key || !typeId || !jiraCfgCache.hasToken) { box.innerHTML = ''; jiraFieldDefs = []; return }
 
   const r = await window.db.jiraFields({ projectKey: key, issueTypeId: typeId })
-  if (!r.ok || !r.fields.length) { box.innerHTML = ''; jiraFieldDefs = []; return }
+  if (!r.ok) { jiraAuthCheck(r, '필드 조회'); box.innerHTML = ''; jiraFieldDefs = []; return }
+  if (!r.fields.length) { box.innerHTML = ''; jiraFieldDefs = []; return }
   jiraFieldDefs = r.fields
   renderJiraFieldRows()
 }
@@ -2048,7 +2054,7 @@ async function loadAssignees(q = '') {
   const key = (jiraCfgCache.project || '').toUpperCase()
   if (!key) return
   const r = await window.db.jiraAssignable({ projectKey: key, query: q })
-  if (!r.ok) { mirrorLog('[Jira] 담당자 조회 실패 — ' + r.message); return }
+  if (!r.ok) { jiraAuthCheck(r, '담당자 조회'); return }
   // 빈 목록으로 덮어쓰면 복원해 둔 이름표까지 지워진다 (검색어 없이 부르면 빈 결과가 오기도 한다)
   if (!r.users.length) return
   setPickerItems('jiraMAssignee',
@@ -2103,6 +2109,17 @@ async function saveJiraSettings() {
   return true
 }
 
+// 조회가 실패했을 때 사용자에게 알린다. 토큰 만료(401)는 조용히 지나가면 "필드가 안 보인다"
+// 로만 보여서 원인을 알 수 없으므로 따로 짚어 준다. 같은 안내가 연달아 뜨지 않게 한 번만.
+let lastJiraAuthWarn = 0
+function jiraAuthCheck(r, what) {
+  mirrorLog(`[Jira] ${what} 실패 — ${r.message}`)
+  if (r.status !== 401) return
+  if (Date.now() - lastJiraAuthWarn < 30000) return
+  lastJiraAuthWarn = Date.now()
+  showToast('Jira 인증이 만료되었습니다 — 설정 → 연결 정보 입력에서 API 토큰을 새로 발급해 주세요', true)
+}
+
 // 토큰 발급 페이지를 기본 브라우저로 연다 (앱 안에서 로그인시킬 일이 아니다)
 function openTokenPage() {
   window.db.jiraOpen('https://id.atlassian.com/manage-profile/security/api-tokens')
@@ -2154,7 +2171,8 @@ async function refreshIssueTypes(preferred = '') {
   if (!key || !jiraCfgCache.hasToken) { fillTypeSelect(typeId, JIRA_FALLBACK_TYPES, keep); return }
 
   const r = await window.db.jiraIssueTypes(key)
-  if (!r.ok || !r.types.length) { fillTypeSelect(typeId, JIRA_FALLBACK_TYPES, keep); return }
+  if (!r.ok) { jiraAuthCheck(r, '이슈 타입 조회'); fillTypeSelect(typeId, JIRA_FALLBACK_TYPES, keep); return }
+  if (!r.types.length) { fillTypeSelect(typeId, JIRA_FALLBACK_TYPES, keep); return }
   jiraTypeCache[key] = r.types
   jiraTypeItems[key] = r.items || []
   fillTypeSelect(typeId, r.types, keep)
@@ -2333,6 +2351,16 @@ async function openJiraModal(fromIssue = false) {
     return
   }
   const set = (id, v) => { const el = $(id); if (el) el.value = v }
+
+  // 토큰이 아직 살아 있는지 먼저 확인한다. 만료된 채로 열면 필드가 텅 빈 팝업이 떠서
+  // 원인을 알 수 없다. 인증 문제면 팝업 대신 연결 정보 입력을 띄운다.
+  const ping = await window.db.jiraPing()
+  if (!ping.ok) {
+    jiraAuthCheck(ping, 'Jira 연결 확인')
+    if (ping.status === 401 || ping.status === 403) { openJiraConfig(); return }
+    showToast('Jira 에 연결할 수 없습니다 — ' + ping.message, true)
+    return
+  }
 
   // 로그를 첨부할 것이므로 그동안 로그가 더 쌓이지 않게 멈춘다 (닫으면 다시 돌린다)
   jiraPausedLogcat = logcatRunning

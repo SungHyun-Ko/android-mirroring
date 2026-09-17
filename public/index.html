@@ -4,205 +4,189 @@
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'self'; connect-src 'self' ws://127.0.0.1:*; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; font-src https://cdn.jsdelivr.net; script-src 'self' 'unsafe-inline'">
+    content="default-src 'self'; connect-src 'self' ws://127.0.0.1:*; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; font-src https://cdn.jsdelivr.net; script-src 'self' 'unsafe-inline'; img-src 'self' data:">
   <title>안드로이드 미러링</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.47.0/tabler-icons.min.css">
   <link rel="stylesheet" href="style.css">
 </head>
 
 <body>
-  <nav>
-    <div class="logo">
-      <div class="logo-dot"></div>안드로이드 미러링
-    </div>
-    <div class="nav-spacer"></div>
-    <div class="conn-badge disconnected" id="connBadge" onclick="openConnectModal()">
-      <span class="pulse"></span><span id="connText">연결되지 않음</span>
-    </div>
-  </nav>
-
+  <!-- 상단 nav 와 좌측 사이드바는 제거했다. 도구 전환은 우측 패널의 탭이 대신하고,
+       기기 연결은 우측 '미러링' 탭의 버튼으로 한다. -->
   <div class="layout">
-    <div class="sidebar">
-      <div class="sidebar-section">메인</div>
-      <div class="nav-item active" onclick="switchPage('mirror',this)"><i class="ti ti-device-mobile"></i>미러링</div>
-      <div class="nav-item" onclick="switchPage('screenshot',this)"><i class="ti ti-camera"></i>화면 캡처</div>
-      <div class="nav-item" onclick="switchPage('record',this)"><i class="ti ti-video"></i>화면 녹화</div>
-      <div class="sidebar-section">도구</div>
-      <div class="nav-item" onclick="switchPage('install',this)"><i class="ti ti-package"></i>APK 설치</div>
-      <div class="nav-item" onclick="switchPage('clipboard',this)"><i class="ti ti-clipboard"></i>클립보드</div>
-      <div class="nav-item" onclick="switchPage('files',this)"><i class="ti ti-folders"></i>파일 전송</div>
-      <div class="nav-item" onclick="switchPage('packet',this)"><i class="ti ti-spy"></i>패킷 분석</div>
-      <div class="sidebar-section">기기</div>
-      <div class="nav-item" onclick="switchPage('settings',this)"><i class="ti ti-settings"></i>설정</div>
-    </div>
 
-    <div class="content">
-
-      <!-- 세팅 상태 배너 (문제 있을 때만 표시) -->
-      <div id="setupBanner"
-        style="display:none; background:rgba(245,166,35,0.1); border:1px solid rgba(245,166,35,0.35); border-radius:12px; padding:14px 18px; margin-bottom:20px;">
-        <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
-          <i class="ti ti-alert-triangle" style="color:#f5a623; font-size:18px;"></i>
-          <span style="font-size:13px; font-weight:600;">세팅이 완료되지 않았습니다</span>
-          <button class="btn-sm" style="margin-left:auto" onclick="runSetupCheck()"><i class="ti ti-refresh"></i>다시
-            확인</button>
-        </div>
-        <ul id="setupIssues" style="font-size:12px; color:var(--muted); padding-left:28px; line-height:1.8;"></ul>
+    <!-- 왼쪽: 디바이스. 높이는 창의 60% 로 고정하며 그 아래로는 줄지 않는다 -->
+    <div class="device-col">
+      <!-- 기기 제어 툴바 — 디바이스 바로 위. 예전 미러링 탭의 '기기 제어' 카드를 대체한다 -->
+      <div class="device-bar">
+        <button class="dev-btn" onclick="keyevent(4)" title="뒤로"><i class="ti ti-arrow-left"></i></button>
+        <button class="dev-btn" onclick="keyevent(3)" title="홈"><i class="ti ti-circle"></i></button>
+        <button class="dev-btn" onclick="keyevent(187)" title="최근 앱"><i class="ti ti-layout-grid"></i></button>
+        <span class="dev-sep"></span>
+        <!-- 기기 하드웨어 키 + 보기 회전 -->
+        <button class="dev-btn" onclick="keyevent(26)" title="전원"><i class="ti ti-power"></i></button>
+        <button class="dev-btn" onclick="keyevent(24)" title="볼륨 +"><i class="ti ti-volume"></i></button>
+        <button class="dev-btn" onclick="keyevent(25)" title="볼륨 −"><i class="ti ti-volume-2"></i></button>
+        <button class="dev-btn" onclick="rotateView(-1)" title="좌로 회전"><i class="ti ti-rotate"></i></button>
+        <button class="dev-btn" onclick="rotateView(1)" title="우로 회전"><i class="ti ti-rotate-clockwise"></i></button>
+        <span class="dev-sep"></span>
+        <!-- 기록: 캡처 · 녹화 -->
+        <button class="dev-btn" onclick="takeScreenshot()" title="캡처"><i class="ti ti-camera"></i></button>
+        <!-- 녹화 토글 — 대기: 흰 글씨 ● REC / 녹화중: 빨간 글씨 ■ STOP -->
+        <button class="rec-toggle" id="recToggle" onclick="toggleRecord()" title="화면 녹화">
+          <i class="ti ti-circle-filled"></i><span>REC</span>
+        </button>
       </div>
-      <!-- 미러링 -->
-      <div class="page active" id="page-mirror">
-        <div class="page-header">
-          <div>
-            <h1>화면 미러링</h1>
-            <p>Android 화면을 PC에서 실시간으로 제어하세요</p>
-          </div>
-          <div class="header-actions">
-            <button class="btn-sm" id="headerActivityBtn"
-              style="display:flex; max-width:400px; background:transparent; border-color:var(--border);"
-              onclick="showActivityInfo()" title="현재 화면 상세 정보 보기">
-              <i class="ti ti-app-window"></i><span id="headerActivityText"
-                style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:inline-block; vertical-align:bottom; margin-top:2px;">—</span>
-            </button>
-            <button class="btn-sm" onclick="stopMirror()"><i class="ti ti-player-stop"></i>중지</button>
-            <button class="btn-sm primary" onclick="startMirror()"><i class="ti ti-player-play"></i>시작</button>
-          </div>
-        </div>
-        <div class="mirror-layout">
-          <div class="phone-frame">
-            <div class="phone-screen" id="phoneScreen">
+      <div class="phone-frame">
+        <!-- 녹화 경과 시간 — 녹화 중에만 보인다 -->
+        <div class="rec-timer" id="recTimer">00:00</div>
+            <div class="phone-screen" id="phoneScreen"
+              ondragover="event.preventDefault();this.classList.add('apk-drop')"
+              ondragleave="this.classList.remove('apk-drop')"
+              ondrop="handleMirrorDrop(event)">
               <div class="phone-notch"></div>
               <i class="ti ti-device-mobile-off" id="phoneIcon" style="font-size:40px;color:var(--muted)"></i>
               <p id="phoneMsg" style="font-size:13px;color:var(--muted)">기기를 연결해 주세요</p>
               <div class="phone-home"></div>
             </div>
-            <div style="margin-top:10px;">
-              <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
-                <span style="font-size:10px;color:var(--muted);font-weight:600;letter-spacing:.5px;">BRIDGE LOG</span>
-                <div style="flex:1"></div>
-                <button class="btn-sm" id="logCopyBtn" onclick="copyMirrorLog()" title="로그 전체 복사"
-                  style="font-size:10px;padding:2px 8px;height:22px;">
-                  <i class="ti ti-copy" style="font-size:11px;"></i> 복사
-                </button>
-                <button class="btn-sm" onclick="clearMirrorLog()" title="로그 지우기"
-                  style="font-size:10px;padding:2px 8px;height:22px;">
-                  <i class="ti ti-trash" style="font-size:11px;"></i> 지우기
-                </button>
-              </div>
-              <div id="scrcpyLog" class="scrcpy-log"
-                style="max-height:160px;overflow-y:auto;background:#0a0a0a;border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:8px 10px;font-family:monospace;font-size:11px;color:#aaa;white-space:pre-wrap;word-break:break-all;user-select:text;-webkit-user-select:text;cursor:text;">
-              </div>
-            </div>
-          </div>
-          <div class="mirror-controls">
-            <div class="ctrl-card">
-              <div class="ctrl-title">화질 설정</div>
-              <div class="quality-row">
-                <div class="quality-btn" onclick="setQuality(this,'SD',854)">SD</div>
-                <div class="quality-btn active" onclick="setQuality(this,'HD',1280)">HD</div>
-                <div class="quality-btn" onclick="setQuality(this,'FHD',0)">FHD</div>
-              </div>
-            </div>
-            <div class="ctrl-card">
-              <div class="ctrl-title">화면 크기 조절</div>
-              <div style="display:flex;align-items:center;gap:10px;">
-                <input type="range" id="screenSizeSlider" min="200" max="600" value="260" style="flex:1;cursor:pointer;"
-                  oninput="changeScreenSize(this.value)">
-                <span id="screenSizeText"
-                  style="font-size:12px;color:var(--muted);min-width:40px;text-align:right">260px</span>
-              </div>
-            </div>
-            <div class="ctrl-card">
-              <div class="ctrl-title">기기 제어</div>
-              <div class="ctrl-grid">
-                <div class="ctrl-btn" onclick="keyevent(3)"><i class="ti ti-circle"></i>홈</div>
-                <div class="ctrl-btn" onclick="keyevent(4)"><i class="ti ti-arrow-left"></i>뒤로</div>
-                <div class="ctrl-btn" onclick="keyevent(187)"><i class="ti ti-layout-grid"></i>최근 앱</div>
-                <div class="ctrl-btn" onclick="keyevent(26)"><i class="ti ti-power"></i>전원</div>
-                <div class="ctrl-btn" onclick="keyevent(24)"><i class="ti ti-volume"></i>볼륨+</div>
-                <div class="ctrl-btn" onclick="keyevent(25)"><i class="ti ti-volume-off"></i>볼륨-</div>
-                <div class="ctrl-btn success" onclick="takeScreenshot()"><i class="ti ti-camera"></i>캡처</div>
-                <div class="ctrl-btn" onclick="keyevent(82)"><i class="ti ti-rotate"></i>회전</div>
-              </div>
-            </div>
-            <div class="ctrl-card">
-              <div class="ctrl-title">연결 정보</div>
-              <div class="info-rows">
-                <div class="info-row"><span>상태</span><span id="statusText" style="color:var(--red)">미연결</span></div>
-                <div class="info-row"><span>기기</span><span id="deviceText">—</span></div>
-                <div class="info-row"><span>현재 화면</span><span id="activityText"
-                    style="overflow:hidden; text-overflow:ellipsis; max-width:140px; white-space:nowrap; text-align:right;"
-                    title="—">—</span></div>
-                <div class="info-row"><span>해상도</span><span id="resText">—</span></div>
-                <div class="info-row"><span>비트레이트</span><span id="bitrateText">—</span></div>
-              </div>
-            </div>
-            <button class="btn-primary" onclick="openConnectModal()"><i class="ti ti-plug"></i>기기 연결</button>
-            <button class="btn-outline" onclick="wifiQuickConnect()"><i class="ti ti-wifi"></i>Wi-Fi로 연결</button>
-          </div>
-        </div>
       </div>
+    </div>
+
+    <!-- 오른쪽: LogCat. 너비는 디바이스의 2배, 높이는 디바이스와 동일 (JS 가 맞춘다).
+         예전의 BRIDGE LOG 자리를 대체한다 — 브리지 로그는 userData/mirror.log 로 간다. -->
+    <div class="logcat-col" id="logcatCol">
+      <!-- 현재 미러링 중인 화면의 Activity. 클릭하면 상세 정보 -->
+      <div class="logcat-activity" id="footerActivityBtn" onclick="showActivityInfo()"
+        title="현재 화면 상세 정보 보기">
+        <i class="ti ti-app-window"></i><span id="headerActivityText">—</span>
+      </div>
+      <div class="logcat-bar">
+        <button class="btn-sm" onclick="saveLogcat()" title="지금 보이는 로그를 txt 로 저장">
+          <i class="ti ti-download"></i>파일로 저장</button>
+        <button class="btn-sm" id="logFilterBtn" onclick="toggleAppLogFilter()"
+          title="현재 포그라운드 앱의 로그만 보기"><i class="ti ti-filter"></i>현재 실행중인 앱 로그보기</button>
+        <select id="logcatLevel" class="logcat-level" onchange="setLogcatLevel(this.value)"
+          title="이 레벨 이상만 표시">
+          <option value="0">전체</option>
+          <option value="1">Debug 이상</option>
+          <option value="2">Info 이상</option>
+          <option value="3">Warn 이상</option>
+          <option value="4">Error 만</option>
+        </select>
+        <select id="logcatPreset" class="logcat-level" onchange="setLogcatPreset(this.value)"
+          title="자주 쓰는 묶음 필터">
+          <option value="">필터 없음</option>
+          <option value="http">HTTP 통신</option>
+          <option value="crash">예외 · 크래시 · ANR</option>
+        </select>
+      </div>
+      <div class="logcat-filterbar">
+        <span class="logcat-title">LOGCAT</span>
+        <input type="text" id="logcatFilter" class="logcat-filter" title="tag: / level: / message: / pid: / tid: 로 항목을 지정할 수 있습니다. 여러 항목은 AND, 앞에 - 를 붙이면 제외, 공백이 있으면 따옴표로 묶으세요." placeholder="tag:Foo level:E message:내용 -tag:Bar"
+          oninput="renderLogcat()">
+        <button class="btn-icon" onclick="clearLogcat()" title="로그 지우기"><i class="ti ti-trash"></i></button>
+        <button class="btn-icon" id="logcatToggle" onclick="toggleLogcat()" title="시작"><i class="ti ti-player-play"></i></button>
+      </div>
+      <pre class="logcat-body" id="logcatBody"></pre>
+      <!-- 위로 올려 읽는 중일 때만 뜬다 — 누르면 최신 로그로 -->
+      <button class="logcat-jump" id="logcatJump" onclick="scrollLogcatToBottom()" title="최신 로그로 이동">
+        <i class="ti ti-arrow-down"></i>하단 이동
+      </button>
+    </div>
+
+    <!-- 오른쪽: 도구 패널. 탭으로 전환하며 높이는 디바이스에 맞춘다 -->
+    <div class="tool-col">
+      <!-- 접기/펼치기 핸들 — 패널 우측 가장자리 가운데 -->
+      <button class="tool-handle" id="toolToggle" onclick="toggleToolPanel()" title="도구 패널 접기">
+        <i class="ti ti-chevron-left"></i>
+      </button>
+      <div class="tool-tabs">
+        <div class="tool-tab active" onclick="switchPage('mirror',this)"><i class="ti ti-device-mobile"></i>미러링</div>
+        <!-- APK 탭은 미러링 탭의 'APK 설치' 버튼으로 옮겼다.
+             클립보드 탭은 양방향 자동 동기화로 대체할 예정이라 내렸다 (docs/TODO.md 참고). -->
+        <!-- 패킷 탭 — 기능은 살아 있고 화면에만 노출하지 않는다 -->
+        <div class="tool-tab" style="display:none" onclick="switchPage('packet',this)"><i class="ti ti-spy"></i>패킷</div>
+        <div class="tool-tab" onclick="switchPage('settings',this)"><i class="ti ti-settings"></i>설정</div>
+      </div>
+
+      <div class="tool-body">
+
+        <!-- 세팅 상태 배너는 없앴다. 점검 결과는 아래 '미러링 로그' 패널에 줄로 남는다. -->
+
+        <!-- 미러링 -->
+        <div class="page active" id="page-mirror">
+          <!-- 크래시·ANR 감지 — 발생했을 때만 보인다 -->
+          <div class="issue-card" id="issueCard">
+            <div class="issue-head">
+              <i class="ti ti-alert-triangle"></i><span id="issueTitle">문제 감지</span>
+              <button class="btn-sm" onclick="openJiraModal(true)" title="이 문제로 Jira 이슈 만들기"><i
+                  class="ti ti-ticket"></i></button>
+              <button class="btn-sm" onclick="copyIssue()" title="관련 로그 복사"><i class="ti ti-copy"></i></button>
+              <button class="btn-sm" onclick="clearIssue()" title="지우기"><i class="ti ti-x"></i></button>
+            </div>
+            <p class="issue-detail" id="issueDetail"></p>
+          </div>
+
+          <!-- 현재 포그라운드 앱 작업대 -->
+          <div class="ctrl-card">
+            <div class="ctrl-title">현재 앱</div>
+            <div class="app-pkg" id="appPkg">—</div>
+            <div class="app-ver" id="appVer"></div>
+            <div class="app-actions">
+              <button class="btn-sm" onclick="appAction('clear')"><i class="ti ti-eraser"></i>데이터삭제</button>
+              <button class="btn-sm" onclick="appAction('settings')"><i class="ti ti-settings"></i>앱 정보</button>
+              <button class="btn-sm" onclick="openJiraModal()" title="기기·앱 정보와 로그를 채운 백로그 초안 만들기">
+                <i class="ti ti-ticket"></i>Jira 등록</button>
+            </div>
+          </div>
+
+          <!-- 기기 정보 — 티켓에 붙일 환경 -->
+          <div class="ctrl-card">
+            <div class="ctrl-title">기기
+              <button class="btn-sm" style="float:right;margin-top:-4px" onclick="copyDeviceInfo()"
+                title="전체 복사"><i class="ti ti-copy"></i></button>
+            </div>
+            <div class="info-rows" id="deviceInfoRows">
+              <div class="info-row"><span>모델</span><span id="devModel">—</span></div>
+              <div class="info-row"><span>Android</span><span id="devOs">—</span></div>
+              <div class="info-row"><span>전화번호</span><span id="devPhone">—</span></div>
+            </div>
+          </div>
+          <div class="bridge-card">
+            <div class="ctrl-title">미러링 로그</div>
+            <div id="scrcpyLog" class="scrcpy-log"></div>
+          </div>
+          <!-- 화면 크기 조절 주석처리 (요청) — 디바이스 높이는 창의 60% 로 고정된다
+          <div class="ctrl-card">
+            <div class="ctrl-title">화면 크기 조절</div>
+            <div style="display:flex;align-items:center;gap:10px;">
+              <input type="range" id="screenSizeSlider" min="200" max="600" value="260"
+                oninput="changeScreenSize(this.value)">
+              <span id="screenSizeText">260px</span>
+            </div>
+          </div>
+          -->
+          <!-- 기기 제어 카드는 디바이스 위 툴바(.device-bar)로 옮겼다 -->
+          <!-- 연결 정보 UI 주석처리 (요청)
+          <div class="ctrl-card">
+            <div class="ctrl-title">연결 정보</div>
+            <div class="info-rows">
+              <div class="info-row"><span>상태</span><span id="statusText">미연결</span></div>
+              <div class="info-row"><span>기기</span><span id="deviceText">—</span></div>
+              <div class="info-row"><span>현재 화면</span><span id="activityText" title="—">—</span></div>
+              <div class="info-row"><span>해상도</span><span id="resText">—</span></div>
+              <div class="info-row"><span>비트레이트</span><span id="bitrateText">—</span></div>
+            </div>
+          </div>
+          -->
+        </div>
 
       <!-- 화면 캡처 -->
-      <div class="page" id="page-screenshot">
-        <div class="page-header">
-          <div>
-            <h1>화면 캡처</h1>
-            <p>스크린샷을 찍고 저장하세요</p>
-          </div>
-          <div class="header-actions">
-            <button class="btn-sm primary" onclick="takeScreenshot()"><i class="ti ti-camera"></i>지금 캡처</button>
-          </div>
-        </div>
-        <div id="captureResult" class="ctrl-card" style="display:none;margin-bottom:16px">
-          <p id="captureMsg" style="font-size:13px"></p>
-        </div>
-        <p style="font-size:13px;color:var(--muted)">캡처 후 저장 대화상자가 열립니다. 기기가 연결되어 있어야 합니다.</p>
-      </div>
-
-      <!-- 화면 녹화 -->
-      <div class="page" id="page-record">
-        <div class="page-header">
-          <div>
-            <h1>화면 녹화</h1>
-            <p>Android 화면을 MP4로 녹화하세요</p>
-          </div>
-        </div>
-        <div class="record-zone">
-          <div class="record-timer" id="timer">00:00:00</div>
-          <button class="record-btn" id="recordBtn" onclick="toggleRecord()">
-            <i class="ti ti-player-record" id="recordIcon"></i>
-          </button>
-          <div class="record-status" id="recordStatus">녹화 대기 중</div>
-        </div>
-        <div class="record-settings">
-          <div class="setting-item">
-            <div class="setting-label">비트레이트</div>
-            <select id="recBitrate">
-              <option value="8">8 Mbps (고품질)</option>
-              <option value="4" selected>4 Mbps (균형)</option>
-              <option value="2">2 Mbps (저용량)</option>
-            </select>
-          </div>
-          <div class="setting-item">
-            <div class="setting-label">해상도</div>
-            <select id="recSize">
-              <option value="">기기 원본</option>
-              <option value="1920x1080">1920x1080</option>
-              <option value="1280x720" selected>1280x720</option>
-              <option value="854x480">854x480</option>
-            </select>
-          </div>
-        </div>
-      </div>
+      <!-- 캡처·녹화 탭은 없앴다. 두 기능은 미러링 탭의 버튼으로 옮겼고,
+           녹화 설정(비트레이트/해상도)은 설정 탭으로 옮겼다. -->
 
       <!-- APK 설치 -->
       <div class="page" id="page-install">
-        <div class="page-header">
-          <div>
-            <h1>APK 설치</h1>
-            <p>APK 파일을 선택하거나 드래그해서 설치하세요</p>
-          </div>
-        </div>
         <div class="drop-zone" id="dropZone" ondragover="event.preventDefault();this.classList.add('dragging')"
           ondragleave="this.classList.remove('dragging')" ondrop="handleApkDrop(event)" onclick="openApkPicker()">
           <i class="ti ti-package-import"></i>
@@ -214,12 +198,6 @@
 
       <!-- 클립보드 -->
       <div class="page" id="page-clipboard">
-        <div class="page-header">
-          <div>
-            <h1>클립보드 공유</h1>
-            <p>PC와 Android 간 텍스트를 주고받으세요</p>
-          </div>
-        </div>
         <div class="clip-area">
           <div class="clip-box">
             <h3><i class="ti ti-device-desktop"></i> PC → Android</h3>
@@ -238,15 +216,9 @@
 
       <!-- 파일 전송 -->
       <div class="page" id="page-files">
-        <div class="page-header">
-          <div>
-            <h1>파일 전송</h1>
-            <p>PC와 Android 사이에서 파일을 주고받으세요</p>
-          </div>
-          <div class="header-actions">
-            <button class="btn-sm primary" onclick="pushFileDialog()"><i class="ti ti-upload"></i>PC → Android</button>
-            <button class="btn-sm" onclick="pullFileDialog()"><i class="ti ti-download"></i>Android → PC</button>
-          </div>
+        <div class="tool-actions">
+          <button class="btn-sm primary" onclick="pushFileDialog()"><i class="ti ti-upload"></i>PC → Android</button>
+          <button class="btn-sm" onclick="pullFileDialog()"><i class="ti ti-download"></i>Android → PC</button>
         </div>
         <div class="drop-zone" ondragover="event.preventDefault();this.classList.add('dragging')"
           ondragleave="this.classList.remove('dragging')" ondrop="handleFileDrop(event)" onclick="pushFileDialog()">
@@ -259,13 +231,16 @@
 
       <!-- 설정 -->
       <div class="page" id="page-settings">
-        <div class="page-header">
-          <div>
-            <h1>설정</h1>
-            <p>연결 및 미러링 설정을 구성하세요</p>
-          </div>
-        </div>
         <div style="max-width:520px;display:flex;flex-direction:column;gap:12px">
+          <!-- 미러링 탭에서 옮겨 왔다. 지금 연결된 기기에 바로 적용되는 값이다. -->
+          <div class="ctrl-card">
+            <div class="ctrl-title">화질 설정</div>
+            <div class="quality-row">
+              <div class="quality-btn" onclick="setQuality(this,'SD',854)">SD</div>
+              <div class="quality-btn active" onclick="setQuality(this,'HD',1280)">HD</div>
+              <div class="quality-btn" onclick="setQuality(this,'FHD',0)">FHD</div>
+            </div>
+          </div>
           <div class="ctrl-card">
             <div class="ctrl-title">미러링 기본값</div>
             <div class="info-rows" style="gap:12px">
@@ -283,22 +258,76 @@
               </div>
             </div>
           </div>
-          <button class="btn-primary" onclick="saveSettings()"><i class="ti ti-device-floppy"></i>설정 저장</button>
+          <div class="ctrl-card">
+            <div class="ctrl-title">녹화</div>
+            <div class="info-rows" style="gap:12px">
+              <div class="info-row">
+                <span style="color:var(--muted)">비트레이트</span>
+                <select id="recBitrate" class="settings-input">
+                  <option value="8">8 Mbps (고품질)</option>
+                  <option value="4" selected>4 Mbps (균형)</option>
+                  <option value="2">2 Mbps (저용량)</option>
+                </select>
+              </div>
+              <div class="info-row">
+                <span style="color:var(--muted)">해상도</span>
+                <select id="recSize" class="settings-input">
+                  <option value="">기기 원본</option>
+                  <option value="1920x1080">1920x1080</option>
+                  <option value="1280x720" selected>1280x720</option>
+                  <option value="854x480">854x480</option>
+                </select>
+              </div>
+              <p style="font-size:12px;color:var(--muted);margin:0;line-height:1.6">
+                Android 제한으로 1회 최대 3분까지 녹화됩니다.
+              </p>
+            </div>
+          </div>
+          <!-- 키보드 카드 — 숨김. 두 대(Android 12/16) 실측에서 레이아웃을 따로 잡지 않아도
+               UHID 타이핑과 한/영이 그대로 동작해서 평소엔 쓸 일이 없다. 다만 UHID 가 붙어
+               있으면 폰의 화면 키보드가 안 뜨는데, 그걸 다시 켜는 곳이 바로 이 설정 화면이다.
+               그 상황이 생기면 이 블록만 되살리면 된다.
+          <div class="ctrl-card">
+            <div class="ctrl-title">키보드</div>
+            <div class="info-rows" style="gap:12px">
+              <div class="info-row">
+                <span style="color:var(--muted)">입력 방식</span>
+                <span id="kbModeText">미러링 시작 시 자동 판정</span>
+              </div>
+              <p style="font-size:12px;color:var(--muted);line-height:1.6;margin:0">
+                물리 키보드(UHID) 모드에서는 클립보드를 사용하지 않아 "복사되었습니다" 안내가
+                뜨지 않습니다. 한글은 <b>한/영 키</b>로 전환하며 조합은 폰의 키보드가 합니다.
+              </p>
+              <button class="btn-primary" onclick="openKeyboardSettings()">
+                <i class="ti ti-keyboard"></i>폰에서 키보드 레이아웃 설정
+              </button>
+            </div>
+          </div>
+          -->
+          <!-- 입력칸은 좁은 패널에 다 못 들어가서 팝업으로 뺐다. 여기엔 상태만 보여준다. -->
+          <div class="ctrl-card">
+            <div class="ctrl-title">Jira</div>
+            <div class="info-rows">
+              <div class="info-row"><span>상태</span><span id="jiraStatus">미설정</span></div>
+              <div class="info-row"><span>프로젝트 Key</span><span id="jiraSummary">—</span></div>
+              <div class="info-row"><span>이메일</span><span id="jiraEmailText" style="word-break:break-all">—</span>
+              </div>
+            </div>
+            <button class="btn-sm" onclick="openJiraConfig()"
+              style="width:100%; justify-content:center; margin-top:10px">
+              <i class="ti ti-plug-connected"></i>연결 정보 입력
+            </button>
+          </div>
+          <!-- 저장 버튼은 하단 공용 버튼이 대신한다 (설정 탭에서는 '설정 저장'으로 바뀐다) -->
         </div>
       </div>
 
       <!-- 패킷 분석 -->
       <div class="page" id="page-packet">
-        <div class="page-header">
-          <div>
-            <h1>패킷 분석</h1>
-            <p>MITM 프록시를 통해 HTTP/HTTPS 트래픽을 실시간으로 분석합니다</p>
-          </div>
-          <div class="header-actions">
-            <button class="btn-sm" onclick="clearPackets()"><i class="ti ti-trash"></i>지우기</button>
-            <button class="btn-sm" id="proxyStopBtn" style="display:none" onclick="stopProxy()"><i class="ti ti-player-stop"></i>중지</button>
-            <button class="btn-sm primary" id="proxyStartBtn" onclick="startProxy()"><i class="ti ti-player-play"></i>캐패 시작</button>
-          </div>
+        <div class="tool-actions">
+          <button class="btn-sm" onclick="clearPackets()"><i class="ti ti-trash"></i>지우기</button>
+          <button class="btn-sm" id="proxyStopBtn" style="display:none" onclick="stopProxy()"><i class="ti ti-player-stop"></i>중지</button>
+          <button class="btn-sm primary" id="proxyStartBtn" onclick="startProxy()"><i class="ti ti-player-play"></i>캡처 시작</button>
         </div>
 
         <!-- 프록시 세팅 카드 -->
@@ -386,10 +415,207 @@
           <pre class="detail-content" id="detailContent"></pre>
         </div>
       </div>
+      </div>
+
+      <!-- 탭과 무관하게 항상 보이는 하단. 시작/중지는 버튼 하나로 토글한다.
+           현재 화면(Activity) 표시는 좁아서 잘리던 탓에 LogCat 컬럼 위로 옮겼다. -->
+      <div class="tool-footer">
+        <button class="conn-toggle" id="connToggle" onclick="toggleConnection()">
+          <i class="ti ti-plug"></i>기기 연결
+        </button>
+      </div>
     </div>
   </div>
 
   <!-- 연결 모달 -->
+  <!-- 디바이스에 APK 가 아닌 파일을 떨어뜨렸을 때 -->
+  <div class="overlay" id="pushConfirmOverlay" onclick="if(event.target===this) cancelPush()">
+    <div class="modal" style="width:420px;max-width:92vw">
+      <h2>파일 전송</h2>
+      <p id="pushConfirmText" style="word-break:break-all"></p>
+      <p style="font-size:12px;color:var(--muted);margin-top:8px">기기의 Download 폴더로 전송됩니다.</p>
+      <div style="display:flex;gap:10px;margin-top:20px">
+        <button class="btn-primary" style="flex:1;justify-content:center" onclick="confirmPush()">
+          <i class="ti ti-upload"></i>전송
+        </button>
+        <button class="btn-sm" style="flex:1;justify-content:center" onclick="cancelPush()">취소</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 캡처 미리보기 — 저장 전에 확인한다 -->
+  <div class="overlay" id="captureOverlay" onclick="if(event.target===this) cancelCapture()">
+    <div class="modal capture-modal">
+      <h2>캡처 미리보기</h2>
+      <div class="capture-preview"><img id="capturePreview" alt="캡처 미리보기"></div>
+      <div style="display:flex;gap:10px;margin-top:16px">
+        <button class="btn-primary" style="flex:1;justify-content:center" onclick="saveCapture()">
+          <i class="ti ti-device-floppy"></i>저장
+        </button>
+        <button class="btn-sm" style="flex:1;justify-content:center" onclick="copyCapture()">
+          <i class="ti ti-clipboard"></i>클립보드 복사
+        </button>
+        <button class="btn-sm" style="flex:1;justify-content:center" onclick="cancelCapture()">취소</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Jira 연결 정보 — 좁은 설정 패널 대신 여기서 입력받는다 -->
+  <div class="overlay" id="jiraCfgOverlay" onclick="if(event.target===this) closeJiraConfig()">
+    <div class="modal" style="width:540px;max-width:94vw">
+      <h2>Jira 연결 정보</h2>
+      <p style="margin-bottom:16px">이슈를 만들 Jira 계정과 기본 프로젝트를 지정합니다.</p>
+
+      <!-- 사이트는 사내 Jira 하나뿐이라 고정값이다 (src/jira.js 의 DEFAULT_SITE) -->
+      <div class="jira-field">
+        <label>사이트</label>
+        <div class="jira-static" id="jiraSiteText">—</div>
+      </div>
+
+      <div class="jira-field">
+        <label for="jiraEmail">계정 이메일</label>
+        <input type="text" id="jiraEmail" class="modal-input" placeholder="name@company.com" spellcheck="false">
+        <small>Jira 로그인 이메일과 정확히 같아야 합니다. 다르면 요청이 익명 처리되어 엉뚱한 오류가 납니다.</small>
+      </div>
+
+      <!-- 토큰을 넣고 바로 옆에서 연결 테스트 → 통과해야 아래 선택지가 나타난다 -->
+      <div class="jira-field">
+        <label for="jiraToken">API 토큰
+          <button type="button" class="link-btn" onclick="openTokenPage()">
+            <i class="ti ti-external-link"></i>토큰 생성 링크 바로가기
+          </button>
+        </label>
+        <div style="display:flex; gap:8px; align-items:center">
+          <input type="password" id="jiraToken" class="modal-input" placeholder="API 토큰"
+            style="flex:1; min-width:0; margin:0">
+          <button class="btn-sm" style="flex-shrink:0; height:38px" onclick="testJira()">
+            <i class="ti ti-plug-connected"></i>연결 테스트
+          </button>
+        </div>
+        <small style="margin-top:4px">
+          <b>id.atlassian.com → 보안 → API 토큰 만들기</b> 에서 발급합니다.
+          저장할 때 OS 암호화(Windows DPAPI)로 잠그며 화면으로 다시 꺼내지 않습니다.
+        </small>
+      </div>
+
+      <!-- 연결이 확인되기 전에는 고를 게 없으므로 감춰둔다 -->
+      <div id="jiraPickRow" style="display:none; gap:12px">
+        <div class="jira-field" style="flex:1; min-width:0">
+          <label for="jiraProject">기본 프로젝트</label>
+          <div class="picker" id="jiraProject">
+            <button type="button" class="picker-btn" onclick="togglePicker('jiraProject')">
+              <span class="picker-label">—</span><i class="ti ti-chevron-down"></i>
+            </button>
+            <div class="picker-panel">
+              <input type="text" class="picker-search" placeholder="프로젝트 검색"
+                oninput="filterPicker('jiraProject', this.value)">
+              <div class="picker-list"></div>
+            </div>
+          </div>
+          <small id="jiraProjectHint">&nbsp;</small>
+        </div>
+        <!-- 이슈 타입은 등록할 때마다 고르므로 여기서는 받지 않는다 -->
+      </div>
+
+      <div style="display:flex;gap:10px;margin-top:6px">
+        <button class="btn-primary" style="flex:1;justify-content:center" onclick="saveJiraConfig()">
+          <i class="ti ti-device-floppy"></i>저장
+        </button>
+        <button class="btn-sm" style="flex:1;justify-content:center" onclick="closeJiraConfig()">취소</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Jira 백로그 등록 — 기기·앱·로그가 채워진 초안을 확인하고 올린다 -->
+  <div class="overlay" id="jiraOverlay" onclick="if(event.target===this) closeJiraModal()">
+    <div class="modal jira-modal">
+      <h2>Jira 백로그 등록</h2>
+      <!-- 프로젝트는 연결 설정에서 고정한 것을 그대로 쓴다 (여기선 표시만) -->
+      <p id="jiraMTarget" style="margin-bottom:12px">—</p>
+
+      <!-- 필드가 늘어나면 창을 넘어가므로 본문만 따로 스크롤한다 -->
+      <div class="jira-modal-body" id="jiraModalBody">
+      <div class="jira-row">
+        <span class="jira-row-label">이슈 타입</span>
+        <select id="jiraMType" class="modal-input" style="margin:0"></select>
+      </div>
+
+      <!-- 담당자는 allowedValues 가 없어 검색으로 찾는다. 필수 항목이라 항상 띄운다. -->
+      <div class="jira-row">
+        <span class="jira-row-label">담당자 <b style="color:var(--red)">*</b></span>
+        <div class="picker" id="jiraMAssignee">
+          <button type="button" class="picker-btn" onclick="togglePicker('jiraMAssignee')">
+            <span class="picker-label">선택 안 함</span><i class="ti ti-chevron-down"></i>
+          </button>
+          <div class="picker-panel">
+            <input type="text" class="picker-search" placeholder="이름으로 검색"
+              oninput="searchAssignee(this.value)">
+            <div class="picker-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <input type="text" id="jiraMSummary" class="modal-input" placeholder="제목" style="margin-bottom:10px">
+      <textarea id="jiraMDesc" class="modal-input jira-desc" spellcheck="false"></textarea>
+
+      <!-- 생성 화면 필드 — 한 줄에 하나씩, 이슈 타입 줄과 같은 모양 -->
+      <div id="jiraMFields" style="margin-top:10px"></div>
+
+      <div class="jira-row" style="margin-top:4px">
+        <span class="jira-row-label">영상 첨부</span>
+        <button class="btn-sm" style="flex-shrink:0" onclick="pickJiraVideo()">
+          <i class="ti ti-video"></i>파일 선택
+        </button>
+        <span id="jiraMVideo" style="flex:1; min-width:0; font-size:12px; color:var(--muted);
+          overflow:hidden; text-overflow:ellipsis; white-space:nowrap">선택 안 함</span>
+        <button class="btn-sm" id="jiraMVideoClear" style="display:none; flex-shrink:0"
+          onclick="clearJiraVideo()" title="첨부 취소"><i class="ti ti-x"></i></button>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:16px; margin:10px 0 4px; font-size:12px; color:var(--muted)">
+        <label style="display:flex; align-items:center; gap:6px; cursor:pointer">
+          <input type="checkbox" id="jiraMShot" checked>현재 화면 캡처 첨부
+        </label>
+        <label style="display:flex; align-items:center; gap:6px; cursor:pointer">
+          <input type="checkbox" id="jiraMLog" checked>로그 파일 첨부
+        </label>
+      </div>
+      </div><!-- /jira-modal-body -->
+      <div style="display:flex;gap:10px;margin-top:14px">
+        <button class="btn-primary" id="jiraSubmitBtn" style="flex:1;justify-content:center" onclick="submitJira()">
+          <i class="ti ti-send"></i>등록
+        </button>
+        <button class="btn-sm" style="flex:1;justify-content:center" onclick="closeJiraModal()">취소</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 로그 한 줄 자세히 보기 — 기기에서 쪼개져 온 긴 줄은 이미 합쳐진 상태로 들어온다 -->
+  <div class="overlay" id="logDetailOverlay" onclick="if(event.target===this) closeLogDetail()">
+    <div class="modal log-detail-modal">
+      <h2>로그 상세</h2>
+      <pre id="logDetailBody" class="log-detail-body"></pre>
+      <div style="display:flex;gap:10px;margin-top:16px">
+        <button class="btn-primary" style="flex:1;justify-content:center" onclick="copyLogDetail()">
+          <i class="ti ti-copy"></i>복사
+        </button>
+        <button class="btn-sm" style="flex:1;justify-content:center" onclick="closeLogDetail()">닫기</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 미러링 화면에 APK 를 떨어뜨렸을 때 -->
+  <div class="overlay" id="apkConfirmOverlay" onclick="if(event.target===this) cancelApkInstall()">
+    <div class="modal" style="width:420px;max-width:92vw">
+      <h2>APK 설치</h2>
+      <p id="apkConfirmText" style="word-break:break-all"></p>
+      <div style="display:flex;gap:10px;margin-top:20px">
+        <button class="btn-primary" style="flex:1;justify-content:center" onclick="confirmApkInstall()">예</button>
+        <button class="btn-sm" style="flex:1;justify-content:center" onclick="cancelApkInstall()">아니오</button>
+      </div>
+    </div>
+  </div>
+
   <div class="overlay" id="connectOverlay">
     <div class="modal">
       <h2>기기 연결</h2>

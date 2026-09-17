@@ -7,7 +7,17 @@
   --radius: 12px; --radius-sm: 8px;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: var(--bg); color: var(--text); font-family: -apple-system,'Segoe UI',sans-serif; min-height:100vh; display:flex; flex-direction:column; user-select:none; }
+
+/* 스크롤바 — OS 기본 막대는 밝고 투박해서 다크 UI 에서 튄다. 얇고 반투명하게. */
+::-webkit-scrollbar { width:10px; height:10px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:rgba(255,255,255,.16); border-radius:6px;
+  border:2px solid transparent; background-clip:content-box; }
+::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,.3); background-clip:content-box; }
+::-webkit-scrollbar-corner { background:transparent; }
+/* 창 전체를 한 화면으로 쓴다. 페이지 스크롤은 없고 필요한 곳만 내부 스크롤한다. */
+html { height:100%; }
+body { background: var(--bg); color: var(--text); font-family: -apple-system,'Segoe UI',sans-serif; height:100vh; overflow:hidden; display:flex; flex-direction:column; user-select:none; }
 
 nav { display:flex; align-items:center; gap:12px; padding:0 24px; height:56px; border-bottom:1px solid var(--border); background:var(--surface); -webkit-app-region:drag; }
 nav button, nav .conn-badge { -webkit-app-region:no-drag; }
@@ -20,8 +30,249 @@ nav button, nav .conn-badge { -webkit-app-region:no-drag; }
 .conn-badge.searching { background:rgba(245,166,35,.12); color:var(--amber); border:1px solid rgba(245,166,35,.25); }
 .pulse { width:6px; height:6px; border-radius:50%; background:currentColor; animation:pulse 1.4s ease-in-out infinite; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+/* 오래 걸리는 작업(APK 설치 등) 동안 떠 있는 토스트 아이콘 */
+.toast-busy { animation:pulse 1.4s ease-in-out infinite; }
 
-.layout { display:flex; flex:1; overflow:hidden; }
+/* ── 디바이스 + 도구 2컬럼 ──────────────────────────────────────
+   align-items:stretch 라 도구 컬럼 높이가 디바이스 컬럼에 자동으로 맞는다.
+   창 높이를 넘지 않으므로 한 화면에 다 들어온다. */
+.layout { display:flex; flex:1; gap:16px; padding:16px; overflow:hidden; align-items:stretch; -webkit-app-region:drag; }
+.layout > * { -webkit-app-region:no-drag; }
+
+/* 컬럼 순서: 도구 · 디바이스 · LogCat.
+   마크업을 옮기지 않고 order 로만 배치한다 (큰 블록 이동보다 안전하다). */
+.tool-col { order:1; }
+.device-col { order:2; }
+.logcat-col { order:3; }
+
+.device-col { display:flex; flex-direction:column; flex-shrink:0; min-width:0; min-height:0; gap:8px; }
+
+/* 도구 패널 접기 — 접어도 핸들만 얇게 남겨야 다시 펼칠 수 있다 */
+.tool-col.collapsed { flex:0 0 18px; background:transparent; border-color:transparent; }
+.tool-col.collapsed > *:not(.tool-handle) { display:none; }
+
+/* 접기/펼치기 핸들 — 패널 우측 가장자리 세로 가운데 */
+.tool-handle { position:absolute; top:50%; right:-1px; transform:translateY(-50%); z-index:6;
+  display:flex; align-items:center; justify-content:center; width:16px; height:52px;
+  padding:0; cursor:pointer; transition:all .15s;
+  background:var(--surface2); color:var(--muted);
+  border:1px solid var(--border); border-right:none;
+  border-radius:var(--radius-sm) 0 0 var(--radius-sm); }
+.tool-handle:hover { background:var(--accent-dim); color:var(--accent); }
+.tool-handle i { font-size:14px; }
+
+/* 기기 제어 툴바 — 디바이스 바로 위, 딱 한 줄.
+   align-self:center 가 없으면 세로 컬럼의 stretch 때문에 디바이스 너비만큼 늘어난다. */
+.device-bar { display:flex; align-items:center; gap:2px; flex:0 0 auto; align-self:center;
+  padding:4px 6px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-sm); }
+.dev-btn { display:flex; align-items:center; justify-content:center; width:30px; height:30px;
+  background:transparent; border:none; border-radius:var(--radius-sm); color:var(--muted);
+  cursor:pointer; transition:all .15s; }
+.dev-btn:hover { background:var(--surface2); color:var(--text); }
+.dev-btn:active { background:var(--accent-dim); color:var(--accent); }
+.dev-btn i { font-size:17px; }
+.dev-sep { width:1px; height:16px; background:var(--border2); margin:0 4px; flex-shrink:0; }
+
+/* 도구 패널은 내용이 안 잘리는 고정 너비만 쓰고 남는 공간을 먹지 않는다 */
+.tool-col { position:relative; flex:0 0 290px; display:flex; flex-direction:column; min-height:0; overflow:visible;
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); }
+.tool-col .tool-body, .tool-col .tool-tabs { border-radius:inherit; }
+
+/* LogCat 이 남는 공간을 전부 가져간다. 다만 디바이스의 2배를 넘지는 않게 JS 가 max-width 를
+   걸어 둔다. '정확히 2배'로 고정하면 창을 그 너비 아래로 못 줄이게 되어 갇힌다. */
+.logcat-col { flex:1 1 auto; position:relative; min-width:720px; display:flex; flex-direction:column; min-height:0; overflow:hidden;
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); }
+/* 현재 Activity — 좁은 곳에 두면 잘려서 안 보인다. 한 줄을 통으로 쓴다. */
+/* 딱 한 줄 높이만 차지한다 (flex:0 0 auto) */
+.logcat-activity { display:flex; align-items:center; gap:8px; flex:0 0 auto; cursor:pointer;
+  padding:8px 12px; border-bottom:1px solid var(--border); font-size:12px; line-height:1.4;
+  color:var(--text); overflow:hidden; white-space:nowrap; transition:background .15s; }
+.logcat-activity:hover { background:var(--surface2); }
+.logcat-activity i { color:var(--accent); font-size:15px; flex-shrink:0; }
+.logcat-activity span { overflow:hidden; text-overflow:ellipsis; }
+
+/* 최신 로그로 점프 — 스크롤을 올려 읽는 중일 때만 나타난다 */
+.logcat-jump { display:none; position:absolute; bottom:14px; left:50%; transform:translateX(-50%); z-index:5;
+  align-items:center; gap:6px; padding:6px 14px; border-radius:20px; cursor:pointer;
+  background:var(--accent); border:none; color:#fff; font-size:11px; font-weight:600;
+  box-shadow:0 4px 12px rgba(0,0,0,.45); transition:filter .15s; }
+.logcat-jump.on { display:flex; }
+.logcat-jump:hover { filter:brightness(1.12); }
+.logcat-jump i { font-size:13px; }
+
+/* 버튼 행 — 좌측 정렬. 버튼은 줄어들지 않는다(글자가 세로로 접히는 것 방지) */
+.logcat-bar { display:flex; align-items:center; justify-content:flex-start; gap:6px;
+  padding:8px 10px; flex-shrink:0; }
+.logcat-bar .btn-sm { flex-shrink:0; white-space:nowrap; }
+
+/* 필터 행 — 버튼 아래 */
+.logcat-filterbar { display:flex; align-items:center; gap:8px; padding:0 10px 8px;
+  border-bottom:1px solid var(--border); flex-shrink:0; }
+.logcat-title { font-size:10px; font-weight:600; letter-spacing:.5px; color:var(--muted); flex-shrink:0; }
+.logcat-filter { flex:1; min-width:0; height:26px; padding:0 8px; font-size:11px; background:var(--bg);
+  color:var(--text); border:1px solid var(--border); border-radius:var(--radius-sm); outline:none; }
+.logcat-filter:focus { border-color:var(--accent); }
+/* 아이콘만 있는 정사각 버튼 (지우기·시작) */
+.btn-icon { display:flex; align-items:center; justify-content:center; width:26px; height:26px;
+  flex-shrink:0; padding:0; cursor:pointer; transition:all .15s;
+  background:var(--surface2); color:var(--muted);
+  border:1px solid var(--border); border-radius:var(--radius-sm); }
+.btn-icon:hover { background:var(--accent-dim); color:var(--accent); border-color:var(--accent); }
+.btn-icon i { font-size:14px; }
+
+/* width/margin 은 반드시 함께 되돌린다 — 파일 아래쪽 전역 `select { width:100%; margin-top:6px }`
+   가 그대로 먹으면 드롭다운이 행 전체를 먹고 옆 드롭다운이 화면 밖으로 밀려난다 (실측) */
+.logcat-level { flex-shrink:0; width:auto; margin-top:0; height:26px; padding:0 6px; font-size:11px;
+  background:var(--bg); color:var(--text); border:1px solid var(--border);
+  border-radius:var(--radius-sm); outline:none; cursor:pointer; }
+
+/* 로그 레벨별 색 — Android Studio 의 관례를 따른다 */
+.lv-V { color:#7d8590; }
+.lv-D { color:#6aa3f0; }
+.lv-I { color:#3ecf8e; }
+.lv-W { color:#f5a623; }
+.lv-E { color:#ff6b6b; }
+.lv-F { color:#ff4d4d; font-weight:600; }
+.lv-none { color:#666; }
+/* 검은 배경 + 흰 글자 — 레벨 색은 줄마다 .lv-* 로 덮어쓴다 */
+.logcat-body { flex:1; min-height:0; overflow:auto; margin:0; padding:8px 10px; background:#000;
+  font-family:ui-monospace,monospace; font-size:11px; line-height:1.5; color:#f0f0f2;
+  white-space:pre-wrap; word-break:break-all; user-select:text; -webkit-user-select:text; cursor:text; }
+/* 긴 줄은 눌러서 전체를 펼쳐 본다 */
+.logcat-body span.long { cursor:pointer; }
+.logcat-body span.long:hover { background:rgba(255,255,255,.08); }
+
+/* 연결 정보 입력 — 좁은 사이드 패널 대신 팝업에서 라벨과 설명을 제대로 보여준다 */
+.jira-field { margin-bottom:14px; }
+.jira-field label { display:block; font-size:12px; font-weight:600; margin-bottom:6px; }
+/* 라벨 옆 보조 링크 (토큰 발급 페이지 등) */
+.link-btn { background:none; border:none; padding:0 0 0 8px; font-size:11px; font-weight:500;
+  color:var(--accent); cursor:pointer; display:inline-flex; align-items:center; gap:3px; }
+.link-btn:hover { text-decoration:underline; }
+.link-btn i { font-size:13px; }
+.jira-field .modal-input { margin-bottom:4px; }
+.jira-field small { display:block; font-size:11px; color:var(--muted); line-height:1.5; }
+/* 직접 만든 드롭다운 — 네이티브 select 는 목록이 길면 위로 뒤집히는데 그걸 막을 방법이 없다.
+   패널을 우리가 위치시키므로 항상 아래로 열리고, 개수가 많아 검색칸도 같이 둔다. */
+.picker { position:relative; }
+.picker-btn { display:flex; align-items:center; gap:8px; width:100%; text-align:left;
+  background:var(--surface2); border:1px solid var(--border); border-radius:8px;
+  color:var(--text); font-size:14px; padding:10px 14px; cursor:pointer; }
+.picker-btn:hover { border-color:var(--border2); }
+.picker.open .picker-btn { border-color:var(--accent); }
+.picker-btn .picker-label { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.picker-btn i { font-size:15px; color:var(--muted); transition:transform .15s; }
+.picker.open .picker-btn i { transform:rotate(180deg); }
+
+/* fixed 로 띄운다 — 스크롤되는 모달 본문 안에 있어도 잘리지 않는다.
+   좌표는 열 때 버튼 위치에서 계산해 넣는다 (openPickerPanel) */
+.picker-panel { display:none; position:fixed; z-index:200;
+  background:var(--surface); border:1px solid var(--border2); border-radius:8px;
+  box-shadow:0 12px 32px rgba(0,0,0,.5); overflow:hidden; }
+.picker.open .picker-panel { display:block; }
+.picker-search { width:100%; box-sizing:border-box; background:var(--bg); border:none;
+  border-bottom:1px solid var(--border); color:var(--text); font-size:13px; padding:9px 12px; outline:none; }
+.picker-list { max-height:240px; overflow-y:auto; }
+.picker-item { padding:8px 12px; font-size:13px; cursor:pointer; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis; }
+/* 담당자 프로필 사진 — 인증이 필요해 메인에서 받아온 data URL 이다 */
+.picker-avatar { width:20px; height:20px; border-radius:50%; vertical-align:-5px; margin-right:7px; }
+.picker-btn .picker-avatar { width:18px; height:18px; vertical-align:-4px; margin-right:6px; }
+.picker-item:hover { background:var(--surface2); }
+.picker-item.on { background:var(--accent-dim); color:var(--accent); }
+.picker-empty { padding:10px 12px; font-size:12px; color:var(--muted); }
+
+/* '필드명 : 값' 한 줄 — 이슈 타입·영상 첨부·생성 화면 필드가 모두 같은 모양이다 */
+.jira-row { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+.jira-row-label { width:110px; flex-shrink:0; font-size:12px; font-weight:600;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* 필드 고정(핀) — Jira 의 '내 고정된 필드'를 앱에서 대신한다 */
+.pin-btn { flex-shrink:0; width:26px; height:26px; padding:0; display:flex; align-items:center;
+  justify-content:center; background:none; border:none; cursor:pointer; color:var(--muted);
+  border-radius:6px; }
+.pin-btn:hover { background:var(--surface2); color:var(--text); }
+.pin-btn.on { color:var(--accent); }
+.pin-btn i { font-size:15px; }
+.jira-row > .modal-input, .jira-row > .picker { flex:1; min-width:0; }
+.jira-row .modal-input { margin:0; }
+
+/* 입력이 아니라 고정값인 항목 */
+.jira-static { font:13px/1.4 ui-monospace,monospace; color:var(--muted); padding:10px 14px;
+  background:var(--bg); border:1px dashed var(--border); border-radius:8px; }
+
+/* `.modal` 규칙이 이 파일 뒤쪽에 있어 같은 특정성이면 그쪽이 이긴다(width:400px).
+   그래서 `.modal.jira-modal` 로 한 단계 올려 잡는다 — 그냥 `.jira-modal` 이면 안 먹는다. */
+.modal.jira-modal { width:860px; max-width:94vw; display:flex; flex-direction:column; max-height:88vh; }
+/* 필드가 늘어나도 창을 넘지 않게 본문만 스크롤한다 */
+.jira-modal-body { flex:1; min-height:0; overflow-y:auto; padding-right:4px; margin-right:-4px; }
+.jira-desc { min-height:220px; resize:vertical; margin:0; line-height:1.6;
+  font-family:ui-monospace,monospace; font-size:12px; }
+
+.modal.log-detail-modal { width:860px; max-width:94vw; display:flex; flex-direction:column; max-height:85vh; }
+.log-detail-body { flex:1; min-height:0; overflow:auto; margin:12px 0 0; padding:12px; background:#000;
+  border:1px solid var(--border); border-radius:var(--radius-sm); color:#f0f0f2;
+  font-family:ui-monospace,monospace; font-size:12px; line-height:1.55;
+  white-space:pre-wrap; word-break:break-all; user-select:text; -webkit-user-select:text; }
+
+.tool-tabs { display:flex; gap:2px; padding:8px 8px 0; border-bottom:1px solid var(--border); flex-shrink:0; overflow-x:auto; }
+.tool-tab { display:flex; align-items:center; gap:6px; padding:8px 12px; border-radius:var(--radius-sm) var(--radius-sm) 0 0;
+  font-size:12px; color:var(--muted); cursor:pointer; white-space:nowrap; transition:all .15s; border-bottom:2px solid transparent; }
+.tool-tab:hover { background:var(--surface2); color:var(--text); }
+.tool-tab.active { color:var(--accent); border-bottom-color:var(--accent); background:var(--accent-dim); }
+.tool-tab i { font-size:15px; }
+
+.tool-body { flex:1; min-height:0; overflow:hidden; padding:16px 16px 10px; }
+.tool-actions { display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
+
+/* 현재 앱 작업대 */
+.app-pkg { font:600 12px/1.4 ui-monospace, monospace; word-break:break-all; margin-bottom:2px; }
+.app-ver { font-size:11px; color:var(--muted); margin-bottom:10px; }
+.app-actions { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+.app-actions .btn-sm { justify-content:center; }
+/* 버튼이 홀수면 마지막 하나가 반쪽으로 남아 어색하다 — 한 줄을 다 쓰게 한다 */
+.app-actions .btn-sm:last-child:nth-child(odd) { grid-column:span 2; }
+
+/* 미러링 로그 — 화질 설정 아래부터 하단 버튼 직전까지 남는 세로 공간을 채운다.
+   접어 두면 한두 줄만 보여 로그를 읽을 수가 없어 항상 펼쳐 둔다. */
+.tool-body { display:flex; flex-direction:column; }
+/* 미러링 탭은 로그가 남는 공간을 채우므로 페이지가 스크롤하지 않는다.
+   나머지 탭은 내용이 길 수 있으니 페이지 자체가 스크롤한다. */
+/* overflow:hidden 이면 로그창의 음수 마진이 페이지 경계에서 잘려 패널 가장자리까지 못 간다.
+   스크롤은 .tool-body 의 overflow:hidden 이 이미 막고 있으므로 여기선 열어 둔다. */
+#page-mirror { overflow:visible; }
+#page-settings, #page-install, #page-files, #page-clipboard, #page-packet { overflow-y:auto; }
+.tool-body .ctrl-card { flex:0 0 auto; }
+.bridge-card { flex:1 1 0 !important; min-height:100px; display:flex; flex-direction:column;
+  background:transparent; border:none; padding:0; margin-bottom:0 !important; }
+/* 검은 배경 + 흰 글자 — 어두운 UI 에서 로그를 읽기 가장 편한 조합.
+   좌·우·하단 음수 마진으로 .tool-body 의 패딩을 상쇄해 패널 가장자리까지 채운다. */
+.scrcpy-log { flex:1; min-height:0; overflow-y:auto;
+  margin:8px -16px -10px; background:#000; border:none; border-radius:0; padding:8px 10px;
+  font:11px/1.5 ui-monospace, monospace; color:#f0f0f2;
+  white-space:pre-wrap; word-break:break-all; user-select:text; -webkit-user-select:text; cursor:text; }
+
+/* 크래시·ANR 감지 — 발생했을 때만 나타난다 */
+.issue-card { display:none; margin-bottom:12px; padding:12px 14px; border-radius:var(--radius);
+  background:rgba(232,93,93,.12); border:1px solid rgba(232,93,93,.4); }
+.issue-card.on { display:block; }
+.issue-head { display:flex; align-items:center; gap:8px; font-size:12px; font-weight:600; color:var(--red); }
+.issue-head i { font-size:16px; flex-shrink:0; }
+.issue-head span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.issue-head .btn-sm { flex-shrink:0; padding:2px 6px; height:22px; }
+.issue-detail { margin-top:8px; font:11px/1.5 ui-monospace, monospace; color:var(--text);
+  word-break:break-all; max-height:76px; overflow:auto; }
+
+.tool-footer { flex-shrink:0; display:flex; align-items:center; gap:8px; padding:10px 12px; border-top:1px solid var(--border); background:var(--surface); }
+/* Activity 표시가 도구 푸터에 있던 시절의 규칙은 제거했다.
+   flex:1 이 세로 컬럼에서는 세로로 늘어나 영역을 통째로 먹었다. 높이는 .logcat-activity 가 잡는다. */
+
+/* 기기 연결/해제 토글 — 연결되면 붉은 계열로 바뀐다 */
+.conn-toggle { display:flex; align-items:center; justify-content:center; gap:6px; width:100%;
+  padding:9px 16px; border-radius:var(--radius-sm); border:1px solid var(--accent);
+  background:var(--accent); color:#fff; font-size:13px; font-weight:600; cursor:pointer; transition:all .15s; }
+.conn-toggle:hover { filter:brightness(1.1); }
+.conn-toggle.on { background:rgba(232,93,93,.15); border-color:rgba(232,93,93,.5); color:var(--red); }
+.conn-toggle.on:hover { background:rgba(232,93,93,.25); filter:none; }
 .sidebar { width:220px; background:var(--surface); border-right:1px solid var(--border); display:flex; flex-direction:column; padding:16px 12px; gap:4px; flex-shrink:0; overflow-y:auto; }
 .sidebar-section { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.8px; color:var(--muted); padding:8px 8px 4px; margin-top:8px; }
 .sidebar-section:first-child { margin-top:0; }
@@ -32,7 +283,7 @@ nav button, nav .conn-badge { -webkit-app-region:no-drag; }
 
 .content { flex:1; overflow-y:auto; padding:24px; }
 .page { display:none; }
-.page.active { display:block; }
+.page.active { display:flex; flex-direction:column; flex:1; min-height:0; }
 
 .page-header { display:flex; align-items:center; gap:12px; margin-bottom:20px; }
 .page-header h1 { font-size:18px; font-weight:600; }
@@ -49,14 +300,51 @@ nav button, nav .conn-badge { -webkit-app-region:no-drag; }
 .btn-outline:hover { border-color:var(--accent); color:var(--accent); }
 
 .mirror-layout { display:grid; grid-template-columns:1fr 280px; gap:20px; }
-.phone-frame { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:500px; position:relative; overflow:hidden; padding:24px; gap:16px; }
-.phone-screen { width:220px; height:400px; background:#111; border-radius:20px; border:2px solid var(--border2); display:flex; align-items:center; justify-content:center; flex-direction:column; gap:12px; position:relative; }
+/* 디바이스 프레임은 배치용 껍데기일 뿐 — 배경·테두리 없이 컬럼 높이를 그대로 쓴다.
+   min-height:0 이 핵심이다. flex 항목은 기본값(min-height:auto)이면 내용보다 작아지지
+   못해서, JS 가 한 번 큰 높이를 넣으면 프레임이 다시 줄지 못하고 화면 밖으로 넘친다. */
+.phone-frame { background:transparent; border:none; display:flex; flex-direction:column; align-items:center; justify-content:center; position:relative; overflow:visible; padding:0; flex:1; min-height:0; }
+/* 디바이스 화면: 앱 높이를 꽉 채운다. 실제 px 는 JS(changeScreenSize)가 프레임 높이에서
+   계산해 넣고, 너비는 기기 화면비로 역산한다. 아래 값은 첫 렌더 직전의 임시값이다. */
+.phone-screen { height:100%; width:calc((100vh - 60px) * 9 / 19.5); background:#111; border-radius:20px; border:2px solid var(--border2); display:flex; align-items:center; justify-content:center; flex-direction:column; gap:12px; position:relative; overflow:hidden; }
+/* 녹화 토글 — 기기 제어 툴바 안. 상태는 딱 두 가지다.
+   대기: 흰 글씨 ● REC  /  녹화중: 빨간 글씨 ■ STOP */
+/* 녹화 경과 시간 — 디바이스 영역 우측 상단. 녹화 중에만 나타난다. */
+.rec-timer { display:none; position:absolute; top:10px; right:10px; z-index:5;
+  align-items:center; gap:6px; padding:4px 11px; border-radius:20px;
+  background:rgba(232,93,93,.18); border:1px solid rgba(232,93,93,.45);
+  color:var(--red); font:700 12px/1 ui-monospace, monospace; letter-spacing:.5px; }
+.rec-timer.on { display:flex; }
+.rec-timer::before { content:''; width:8px; height:8px; border-radius:50%; background:var(--red);
+  animation:pulse 1.4s ease-in-out infinite; }
+
+/* 테두리·배경 없이 다른 아이콘 버튼과 같은 결로 둔다. 대기 상태 색도 .dev-btn 과 동일. */
+.rec-toggle { display:flex; align-items:center; gap:5px; flex-shrink:0; height:30px; padding:0 8px;
+  background:transparent; border:none; border-radius:var(--radius-sm); color:var(--muted);
+  cursor:pointer; transition:all .15s; font-size:11px; font-weight:700; letter-spacing:.5px; }
+.rec-toggle:hover { background:var(--surface2); color:var(--text); }
+.rec-toggle i { font-size:11px; }
+/* 녹화 중일 때만 빨갛게 */
+.rec-toggle.on, .rec-toggle.on:hover { color:var(--red); }
+.rec-toggle.on:hover { background:rgba(232,93,93,.16); }
+.rec-toggle.on i { animation:pulse 1.4s ease-in-out infinite; }
+
+/* 캡처 미리보기 모달 */
+.capture-modal { width:auto; max-width:92vw; }
+.capture-preview { margin-top:12px; display:flex; justify-content:center; background:#0a0a0a;
+  border:1px solid var(--border); border-radius:var(--radius-sm); padding:10px; }
+.capture-preview img { max-height:58vh; max-width:70vw; object-fit:contain; border-radius:6px; display:block; }
+
+/* APK 를 끌어왔을 때 드롭 가능함을 알린다 */
+.phone-screen.apk-drop { border-color:var(--accent2); box-shadow:0 0 0 4px color-mix(in srgb, var(--accent2) 25%, transparent); }
 .phone-notch { position:absolute; top:12px; width:60px; height:14px; background:#111; border-radius:8px; }
 .phone-home { position:absolute; bottom:8px; width:40px; height:4px; background:var(--border2); border-radius:4px; }
-.scrcpy-log { font-size:11px; color:var(--muted); font-family:monospace; max-height:80px; overflow-y:auto; width:100%; word-break:break-all; }
 
 .mirror-controls { display:flex; flex-direction:column; gap:12px; }
 .ctrl-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px; }
+/* 카드 간격. 형제 선택자(+)는 마크업이 조금만 어긋나도 안 먹어서 각 카드에 직접 준다. */
+.tool-body .ctrl-card { margin-bottom:12px; }
+.tool-body .ctrl-card:last-child { margin-bottom:0; }
 .ctrl-title { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.6px; color:var(--muted); margin-bottom:12px; }
 .ctrl-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
 .ctrl-btn { display:flex; align-items:center; justify-content:center; flex-direction:column; gap:4px; padding:12px 8px; background:var(--surface2); border:1px solid var(--border); border-radius:var(--radius-sm); cursor:pointer; transition:all .15s; font-size:11px; color:var(--muted); }
@@ -128,7 +416,9 @@ textarea:focus { outline:none; border-color:var(--accent); }
 
 #toast { position:fixed; bottom:24px; right:24px; background:var(--surface2); border:1px solid var(--border2); border-radius:var(--radius-sm); padding:12px 16px; font-size:13px; display:flex; align-items:center; gap:8px; transform:translateY(80px); opacity:0; transition:all .3s cubic-bezier(.34,1.56,.64,1); z-index:999; pointer-events:none; }
 #toast.show { transform:translateY(0); opacity:1; }
-#toast i { font-size:16px; color:var(--accent2); }
+#toast i { font-size:16px; color:var(--accent2); flex-shrink:0; }
+/* 원인 안내처럼 여러 줄짜리 메시지도 그대로 읽히게 한다 */
+#toastMsg { white-space:pre-line; max-width:520px; line-height:1.55; }
 
 /* ── 레인지 슬라이더 스타일 ────────────────────────── */
 input[type="range"] {

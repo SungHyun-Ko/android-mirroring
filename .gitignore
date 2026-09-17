@@ -18,3 +18,6 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# 에이전트 도구 로컬 상태 (커밋 대상 아님)
+.omc/

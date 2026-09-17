@@ -89,4 +89,5 @@ Android 단말과 scrcpy의 기본 텍스트 주입방식(`TYPE_INJECT_TEXT = 1`
      xattr -cr /Applications/DroidBridge.app
      ```
 2. **바이너리 변경 시**:
-   - `bin/` 폴더 내에 탑재되는 `scrcpy-server` 바이너리 버전을 임의로 교체할 경우, 파일 명칭을 `scrcpy-server-v[버전번호]` 형태로 리네임하여 넣어주어야 `ensureJar` 모듈이 버전 번호를 올바르게 파싱해 단말 기기에 명령어를 전달할 수 있습니다.
+   - `bin/` 폴더 내에 탑재되는 `scrcpy-server` 바이너리는 **버전 무관하게 그대로 교체해도 됩니다.** 파일명에 버전이 없으면 `_probeJarVer()` 가 서버를 불가능한 버전(`0`)으로 한 번 띄워 거부 메시지에 실려 오는 실제 버전을 읽어냅니다.
+   - 이 조회가 없던 시절에는 파일명 파싱에 실패하면 상수 `FALLBACK_VER` 를 그대로 믿었고, `Windows_setup.ps1` 이 zip 에서 복사해 넣는 `scrcpy-server` 는 파일명에 버전이 없어 항상 이 경로를 탔습니다. 즉 **scrcpy 가 새 버전을 내는 순간 버전 불일치로 미러링이 죽는** 구조였습니다(CI 빌드도 매번 최신 바이너리를 받으므로 동일). 현재는 해소되었습니다.

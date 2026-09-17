@@ -1,6 +1,9 @@
 // ── 전역 상태 ──────────────────────────────────────────────────
 const state = {
   viewRot: 0,           // 보기 회전 — 기기가 아니라 우리 렌더링만 90°씩 돌린다 (0/1/2/3)
+  // 'android' | 'ios'. iOS 는 미러링·입력 경로가 없어(화면은 AirPlay 수신기 창,
+  // 입력은 주입 불가) 연결 후 동작이 갈린다. state.serial 에는 UDID 가 들어간다.
+  platform: 'android',
   serial: null,
   model: null,
   mirroring: false,
@@ -111,29 +114,46 @@ function setTab(el, tab) {
 async function refreshDevices() {
   const list = $('deviceList')
   list.innerHTML = '<p style="font-size:13px;color:var(--muted);text-align:center;padding:16px">검색 중...</p>'
-  const devices = await window.db.getDevices()
-  if (!devices.length) {
+  // Android 와 iOS 를 함께 훑는다. iOS 쪽은 도구가 없으면 실패하는데, 그건
+  // 정상 상황(Android 만 쓰는 PC)이라 조용히 빈 목록으로 넘긴다.
+  const [devices, iosRes] = await Promise.all([
+    window.db.getDevices(),
+    window.db.iosDevices().catch(() => ({ ok: false, devices: [] })),
+  ])
+  const iosList = iosRes?.devices || []
+
+  if (!devices.length && !iosList.length) {
     list.innerHTML = '<p style="font-size:13px;color:var(--muted);text-align:center;padding:16px">연결된 기기가 없습니다</p>'
     return
   }
   list.innerHTML = ''
-  devices.forEach(d => {
+  const add = (icon, title, sub, onPick) => {
     const item = document.createElement('div')
     item.className = 'device-item'
-    item.innerHTML = `<i class="ti ti-device-mobile"></i>
-      <div class="device-item-info">${d.model}<span>${d.serial} · ${d.product}</span></div>
+    item.innerHTML = `<i class="ti ${icon}"></i>
+      <div class="device-item-info">${escapeHtml(title)}<span>${escapeHtml(sub)}</span></div>
       <i class="ti ti-chevron-right" style="color:var(--muted)"></i>`
-    item.onclick = () => selectDevice(d)
+    item.onclick = onPick
     list.appendChild(item)
-  })
+  }
+  devices.forEach(d =>
+    add('ti-device-mobile', d.model, `${d.serial} · ${d.product}`,
+      () => selectDevice({ ...d, platform: 'android' })))
+  iosList.forEach(d =>
+    add('ti-brand-apple', d.name, `iOS ${d.version} · ${d.model}`,
+      () => selectDevice({ platform: 'ios', serial: d.udid, model: d.name, ios: d })))
 }
 
 function selectDevice(d) {
+  state.platform = d.platform || 'android'
   state.serial = d.serial
   state.model = d.model
+  state.ios = d.ios || null
   closeModal()
   setConnected(d.model)
 }
+
+function isIos() { return state.platform === 'ios' }
 
 function setConnected(name) {
   setClass('connBadge', 'conn-badge connected')
@@ -144,12 +164,30 @@ function setConnected(name) {
   setClass('phoneIcon', 'ti ti-device-mobile')
   setText('phoneMsg', '미러링 시작 버튼을 눌러주세요')
   showToast(name + ' 연결됨')
-  startActivityPolling()
   updateMirrorToggle()
-  // 연결되면 미러링과 LogCat 을 바로 시작한다 (시작 버튼을 없앤 대신)
-  if (!logcatRunning) toggleLogcat()
   refreshDeviceInfo()
   updateConnToggle()
+
+  // iOS 는 미러링·Activity 폴링 경로가 없다. 화면은 AirPlay 수신기 창을 쓰고,
+  // 여기서는 syslog 만 띄운다.
+  if (isIos()) {
+    setClass('phoneIcon', 'ti ti-brand-apple')
+    // iOS 는 화면 데이터를 받아올 경로가 없다(scrcpy 대응물 없음, macOS 의 CMIO/DAL
+    // 경로는 제거됨). AirPlay 로 맥에 띄우고 이 앱은 로그·정보·티켓만 맡는다.
+    // 따라할 수 있게 단계를 그대로 적는다 — 그냥 "AirPlay 창에서 보세요" 는 불친절하다.
+    setText('phoneMsg', 'iOS 는 앱 안에 화면을 띄울 수 없습니다. ' +
+      '① 맥: 시스템 설정 → 일반 → AirDrop 및 Handoff → AirPlay 수신기 켜기 ' +
+      '② 아이폰: 제어 센터 → 화면 미러링 → 이 맥 선택. ' +
+      '로그와 기기 정보는 이 앱에서 그대로 보입니다.')
+    syncLogControls()
+    if (!logcatRunning) toggleLogcat()
+    return
+  }
+
+  syncLogControls()
+  startActivityPolling()
+  // 연결되면 미러링과 LogCat 을 바로 시작한다 (시작 버튼을 없앤 대신)
+  if (!logcatRunning) toggleLogcat()
   if (!state.mirroring) startMirror()
 }
 
@@ -652,6 +690,22 @@ let deviceInfo = null
 
 async function refreshDeviceInfo() {
   if (!state.serial) return
+  if (isIos()) {
+    const r = await window.db.iosInfo(state.serial)
+    if (!r.ok) return
+    const i = r.info
+    // 화면 라벨은 Android 것을 그대로 쓴다. 대응되는 iOS 키로 채운다.
+    deviceInfo = {
+      ok: true,
+      manufacturer: 'Apple', model: i.ProductType || '',
+      release: i.ProductVersion || '', sdk: i.BuildVersion || '',
+      phone: i.PhoneNumber || '',
+    }
+    setText('devModel', [i.DeviceName, i.ProductType].filter(Boolean).join(' · ') || '—')
+    setText('devOs', i.ProductVersion ? `iOS ${i.ProductVersion} (${i.BuildVersion || ''})` : '—')
+    setText('devPhone', i.PhoneNumber || 'NULL')
+    return
+  }
   const r = await window.db.deviceInfo(state.serial)
   if (!r.ok) return
   deviceInfo = r
@@ -1040,14 +1094,56 @@ function setLogcatRunning(on) {
 
 async function toggleLogcat() {
   if (logcatRunning) {
-    await window.db.stopLogcat()
+    await (isIos() ? window.db.iosSyslogStop() : window.db.stopLogcat())
     setLogcatRunning(false)
     return
   }
   if (!requireDevice()) return
-  const r = await window.db.startLogcat(state.serial)
-  if (!r.ok) { showToast('logcat 시작 실패: ' + (r.message || ''), true); return }
+  // iOS syslog 는 필터가 없으면 초당 1,000줄이 넘어 LOGCAT_MAX_LINES 를 몇 초 만에
+  // 넘긴다. 기기 쪽 --quiet 를 켜고, 프로세스가 지정돼 있으면 그걸로 좁힌다.
+  const r = isIos()
+    ? await window.db.iosSyslogStart({ udid: state.serial, process: iosLogProcess, quiet: true })
+    : await window.db.startLogcat(state.serial)
+  if (!r.ok) { showToast('로그 시작 실패: ' + (r.message || ''), true); return }
   setLogcatRunning(true)
+}
+
+// iOS 전용: syslog 를 특정 프로세스로 좁힌다. 빈 값이면 --quiet 만 적용된다.
+// (Android 의 '현재 앱만' 필터에 대응하지만, iOS 는 포그라운드 앱을 알 수 없어
+//  사용자가 직접 고른다 — 그 목록은 ios:processes 로 얻는다)
+let iosLogProcess = ''
+
+async function setIosLogProcess(name) {
+  iosLogProcess = name || ''
+  if (logcatRunning) {   // 필터는 기기 쪽 인자라 재시작해야 적용된다
+    await window.db.iosSyslogStop()
+    setLogcatRunning(false)
+    await toggleLogcat()
+  }
+}
+
+// 플랫폼에 따라 로그 도구 표시를 바꾼다. Android 의 '현재 앱' 버튼은 포그라운드
+// 조회에 의존하므로 iOS 에서는 감추고, 대신 프로세스 선택을 띄운다.
+async function syncLogControls() {
+  const sel = $('iosLogProcess')
+  const appBtn = $('logFilterBtn')
+  if (appBtn) appBtn.style.display = isIos() ? 'none' : ''
+  if (!sel) return
+  sel.style.display = isIos() ? '' : 'none'
+  if (!isIos()) return
+
+  sel.innerHTML = '<option value="">전체 프로세스 (시끄러움)</option>'
+  const r = await window.db.iosProcesses(state.serial)
+  if (!r.ok) return
+  // 566개쯤 돌아온다. 이름순으로 정렬하고 중복을 접어 고를 수 있게 만든다.
+  const names = [...new Set(r.processes.map(p => p.name))].sort((a, b) => a.localeCompare(b))
+  for (const n of names) {
+    const o = document.createElement('option')
+    o.value = n
+    o.textContent = n
+    sel.appendChild(o)
+  }
+  sel.value = iosLogProcess
 }
 
 function clearLogcat() {

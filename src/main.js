@@ -4,6 +4,7 @@ const { spawn, execFile, execSync } = require('child_process')
 const fs = require('fs')
 const os = require('os')
 const MirrorBridge = require('./mirror-bridge')
+const iosDevice = require('./ios-device')
 const CertManager = require('./cert-manager')
 const ProxyServer = require('./proxy-server')
 const jira = require('./jira')
@@ -78,16 +79,15 @@ let certManager = null
 const MIRROR_LOG = path.join(app.getPath('userData'), 'mirror.log')
 try { fs.writeFileSync(MIRROR_LOG, '') } catch { }
 
+// 미러링 로그 채널. 화면 패널과 로그 파일 양쪽으로 보낸다.
+function logMirror(msg) {
+  mainWindow?.webContents.send('mirror:log', msg)
+  try { fs.appendFileSync(MIRROR_LOG, `${new Date().toISOString()} ${msg}\n`) } catch { }
+}
+
 function getMirror() {
   if (!mirror) {
-    mirror = new MirrorBridge({
-      adbPath,
-      binDir,
-      onLog: msg => {
-        mainWindow?.webContents.send('mirror:log', msg)
-        try { fs.appendFileSync(MIRROR_LOG, `${new Date().toISOString()} ${msg}\n`) } catch { }
-      },
-    })
+    mirror = new MirrorBridge({ adbPath, binDir, onLog: logMirror })
   }
   return mirror
 }
@@ -684,8 +684,11 @@ ipcMain.handle('device:info', async (_, serial) => {
 // ── LogCat 스트리밍 ────────────────────────────────────────────
 let logcatProcess = null
 
+// Android logcat 과 iOS syslog 는 같은 logcat:data 채널을 쓴다. 둘이 동시에
+// 흐르면 두 기기 로그가 섞이므로 한쪽을 멈출 때 다른 쪽도 같이 멈춘다.
 function stopLogcat() {
   if (logcatProcess) { logcatProcess.kill(); logcatProcess = null }
+  ios?.stopSyslog()
 }
 
 ipcMain.handle('logcat:start', async (_, serial) => {
@@ -717,6 +720,31 @@ ipcMain.handle('logcat:stop', async () => {
   stopLogcat()
   return { ok: true }
 })
+
+// ── iOS (libimobiledevice) ────────────────────────────────────
+// 화면·입력은 다루지 않는다. 화면은 AirPlay 수신기 창을 렌더러가 desktopCapturer 로
+// 가져오고, 입력은 iOS 에 주입 경로가 없다 (WebDriverAgent 는 별도 과제).
+let ios = null
+function getIos() {
+  if (!ios) ios = iosDevice.create({ resolveBin, onLog: logMirror })
+  return ios
+}
+
+ipcMain.handle('ios:devices', () => getIos().devices())
+ipcMain.handle('ios:info', (_, udid) => getIos().info(udid))
+ipcMain.handle('ios:processes', (_, udid) => getIos().processes(udid))
+
+// syslog 는 모듈에서 logcat threadtime 형식으로 변환되어 나오므로 **기존
+// logcat:data / logcat:stopped 채널을 그대로 쓴다.** 렌더러의 LogCat 패널과
+// 필터·검색이 손대지 않고 동작하고, 새 리스너를 등록할 일도 없다.
+ipcMain.handle('ios:syslog-start', (_, { udid, process: proc, quiet }) => {
+  stopLogcat()   // Android logcat 과 동시에 흐르면 두 기기 로그가 섞인다
+  return getIos().startSyslog(udid, { process: proc, quiet },
+    chunk => mainWindow?.webContents.send('logcat:data', chunk),
+    () => mainWindow?.webContents.send('logcat:stopped'))
+})
+
+ipcMain.handle('ios:syslog-stop', () => getIos().stopSyslog())
 
 // 지금 화면에 보이는 로그(필터 적용분)를 txt 로 저장한다. 내용은 렌더러가 만들어 넘긴다.
 ipcMain.handle('logcat:save', async (_, text) => {

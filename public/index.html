@@ -79,6 +79,13 @@
           <option value="http">HTTP 통신</option>
           <option value="crash">예외 · 크래시 · ANR</option>
         </select>
+        <!-- iOS 전용. syslog 는 필터 없이 초당 1,000줄이 넘어 프로세스 지정이 사실상 필수다.
+             Android 는 포그라운드 앱을 알 수 있어 위 '현재 실행중인 앱' 버튼을 쓰지만,
+             iOS 는 알 수 없어 직접 고른다. -->
+        <select id="iosLogProcess" class="logcat-level" style="display:none"
+          onchange="setIosLogProcess(this.value)" title="이 프로세스의 로그만 보기 (iOS)">
+          <option value="">전체 프로세스 (시끄러움)</option>
+        </select>
       </div>
       <div class="logcat-filterbar">
         <span class="logcat-title">LOGCAT</span>

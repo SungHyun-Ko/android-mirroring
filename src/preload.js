@@ -79,6 +79,14 @@ contextBridge.exposeInMainWorld('db', {
     ipcRenderer.on('logcat:stopped', () => cb())
   },
 
+  // iOS (libimobiledevice) — syslog 는 위 onLogcatData 로 함께 들어온다.
+  // 모듈이 logcat 형식으로 변환해 보내므로 채널과 리스너를 공유한다.
+  iosDevices: () => ipcRenderer.invoke('ios:devices'),
+  iosInfo: (udid) => ipcRenderer.invoke('ios:info', udid),
+  iosProcesses: (udid) => ipcRenderer.invoke('ios:processes', udid),
+  iosSyslogStart: (opts) => ipcRenderer.invoke('ios:syslog-start', opts),
+  iosSyslogStop: () => ipcRenderer.invoke('ios:syslog-stop'),
+
   // 패킷 분석 프록시
   proxyStart: (port) => ipcRenderer.invoke('proxy:start', port),
   proxyStop: () => ipcRenderer.invoke('proxy:stop'),

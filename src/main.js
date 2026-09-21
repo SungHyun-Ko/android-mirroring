@@ -150,6 +150,7 @@ function createWindow() {
   mainWindow.on('closed', () => {
     mirror?.destroy()
     stopLogcat()   // 창이 닫혀도 adb logcat 이 남아 돌지 않게
+    ios?.stopTunnel()   // go-ios userspace 터널도 같이 내린다
     mainWindow = null
   })
 }
@@ -736,6 +737,16 @@ ipcMain.handle('ios:info', (_, udid) => getIos().info(udid))
 // syslog 는 모듈에서 logcat threadtime 형식으로 변환되어 나오므로 **기존
 // logcat:data / logcat:stopped 채널을 그대로 쓴다.** 렌더러의 LogCat 패널과
 // 필터·검색이 손대지 않고 동작하고, 새 리스너를 등록할 일도 없다.
+// Android 의 adb:screenshot 과 같은 자리를 맡는다. lastCapture 를 채우므로
+// capture:save / capture:copy / 미리보기 모달이 손대지 않고 그대로 동작한다.
+// 첫 호출에서 go-ios userspace 터널이 뜨느라 몇 초 걸린다.
+ipcMain.handle('ios:screenshot', async (_, udid) => {
+  const r = await getIos().screenshot(udid)
+  if (!r.ok) return r
+  lastCapture = r.buf
+  return { ok: true, dataUrl: 'data:image/png;base64,' + r.buf.toString('base64') }
+})
+
 ipcMain.handle('ios:syslog-start', (_, { udid, process: proc, quiet }) => {
   stopLogcat()   // Android logcat 과 동시에 흐르면 두 기기 로그가 섞인다
   return getIos().startSyslog(udid, { process: proc, quiet },

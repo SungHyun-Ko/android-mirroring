@@ -72,6 +72,10 @@ nav button, nav .conn-badge { -webkit-app-region:no-drag; }
 .dev-btn:active { background:var(--accent-dim); color:var(--accent); }
 .dev-btn i { font-size:17px; }
 .dev-sep { width:1px; height:16px; background:var(--border2); margin:0 4px; flex-shrink:0; }
+/* iOS 기기에서는 adb 전용 컨트롤을 감추지 않고 비활성으로 남긴다 — 감추면 툴바가
+   통째로 사라져 어떤 기능이 있는 도구인지 알 수 없게 된다. */
+.dev-btn:disabled, .rec-toggle:disabled { opacity:.35; cursor:not-allowed; }
+.dev-btn:disabled:hover, .rec-toggle:disabled:hover { background:transparent; color:var(--muted); }
 
 /* 도구 패널은 내용이 안 잘리는 고정 너비만 쓰고 남는 공간을 먹지 않는다 */
 .tool-col { position:relative; flex:0 0 290px; display:flex; flex-direction:column; min-height:0; overflow:visible;

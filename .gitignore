@@ -25,3 +25,6 @@ yarn-error.log*
 
 # 공증 자격증명 (로컬 전용)
 .notarize.env
+
+# go-ios 가 만드는 페어링 개인키 (작업 디렉터리에 떨어진다)
+selfIdentity.plist

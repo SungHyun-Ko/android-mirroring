@@ -1153,10 +1153,21 @@ async function syncLogControls() {
   // '현재 실행중인 앱' 버튼은 포그라운드 패키지 조회(adb)에 의존한다. iOS 는 포그라운드
   // 앱을 알 수 없고, 애초에 프로세스를 Runner 로 고정해 붙으므로 감춘다.
   if (appBtn) appBtn.style.display = isIos() ? 'none' : ''
-  // 기기 제어 툴바(전원·볼륨·회전·캡처·녹화)는 전부 adb 전용이다. iOS 에서 누르면
-  // 실패 토스트만 뜨므로 아예 감춘다.
+  // 기기 제어 툴바는 대부분 adb 전용이다. 감추지 않고 **비활성으로 남긴다** —
+  // 통째로 사라지면 어떤 기능이 있는 도구인지 알 수 없다.
+  // 캡처만 예외다: iOS 도 AFC 로 기기의 최신 스크린샷을 회수할 수 있다.
   const bar = $('deviceBar')
-  if (bar) bar.style.display = isIos() ? 'none' : ''
+  if (bar) {
+    for (const el of bar.querySelectorAll('button')) {
+      const capture = el.getAttribute('onclick') === 'takeScreenshot()'
+      el.disabled = isIos() && !capture
+      el.title = el.disabled
+        ? (el.title.split(' — ')[0] + ' — iOS 미지원 (adb 전용)')
+        : el.title.split(' — ')[0]
+    }
+    const cap = bar.querySelector('[onclick="takeScreenshot()"]')
+    if (cap) cap.title = '캡처'
+  }
 }
 
 function clearLogcat() {
@@ -1578,8 +1589,11 @@ function spinCanvasNow(dir) {
 
 async function takeScreenshot() {
   if (!requireDevice()) return
-  showToast('캡처 중...')
-  const r = await window.db.screenshot(state.serial)
+  // iOS 는 첫 캡처에서 userspace 터널을 띄우느라 2초쯤 걸린다 (이후는 0.8초).
+  showToast(isIos() ? '캡처 중... (첫 회는 터널 기동으로 몇 초 걸립니다)' : '캡처 중...')
+  const r = isIos()
+    ? await window.db.iosScreenshot(state.serial)
+    : await window.db.screenshot(state.serial)
   if (!r.ok) { showToast(r.message || '캡처 실패', true); return }
   const img = $('capturePreview')
   if (img) img.src = r.dataUrl

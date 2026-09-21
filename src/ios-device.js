@@ -1,15 +1,17 @@
 /**
  * ios-device.js — libimobiledevice CLI 래퍼 (iOS QA 지원)
  *
- * Android 쪽과 달리 화면·입력은 다루지 않는다. iOS 는 입력 주입 경로가
- * WebDriverAgent 밖에 없고(맥+Xcode 서명 필수), 화면은 AirPlay 수신기 창을
- * Electron 의 desktopCapturer 로 가져오는 방식이라 메인 프로세스가 할 일이 없다.
- * 여기서 맡는 것은 기기 탐색 / 정보 / 실시간 syslog 뿐이다.
+ * Android 쪽과 달리 **화면 미러링과 입력 주입은 지원하지 않는다** — iOS 는 입력
+ * 주입 경로가 WebDriverAgent(맥+Xcode 서명 필수) 밖에 없고, 화면은 어떤 경로든
+ * 설정 비용이 크다 (막힌 경로들은 CLAUDE.md 의 'iOS 지원 범위' 참고).
+ * 여기서 맡는 것은 기기 탐색 / 정보 / 실시간 syslog / 화면 캡처다.
  *
  * 필요한 외부 도구:
- *   macOS        : brew install libimobiledevice
- *   Windows      : Apple Devices 앱(또는 iTunes) — Apple Mobile Device Service 가
- *                  usbmuxd 역할을 한다. 그 위에서 idevice*.exe 가 동작한다.
+ *   기기·정보·syslog : libimobiledevice
+ *                      macOS   → brew install libimobiledevice
+ *                      Windows → Apple Devices 앱(또는 iTunes). Apple Mobile Device
+ *                                Service 가 usbmuxd 역할을 한다
+ *   화면 캡처         : go-ios (npm 의존, node_modules/go-ios/bin/ios)
  *
  * 순수 파싱 함수는 Electron 의존이 없어 단독 실행된다:
  *   node src/ios-device.js     ← 자가진단
@@ -17,6 +19,9 @@
 'use strict'
 
 const { execFile, spawn } = require('child_process')
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
 
 // ── syslog 한 줄 파싱 ────────────────────────────────────────────
 //
@@ -130,8 +135,17 @@ module.exports = {
 function create({ resolveBin, onLog }) {
   const log = msg => onLog?.('[ios] ' + msg)
   let syslogProc = null
+  let tunnelProc = null
 
   const bin = name => {
+    // go-ios 는 npm 의존성이라 node_modules 안에 있다 — bin/ 이나 시스템 PATH 를
+    // 뒤지는 resolveBin 의 대상이 아니다.
+    if (name === 'ios') {
+      const exe = path.join(__dirname, '..', 'node_modules', 'go-ios', 'bin',
+        process.platform === 'win32' ? 'ios.exe' : 'ios')
+      if (fs.existsSync(exe)) return exe
+      throw new Error('go-ios 가 설치되지 않았습니다. npm install 후 다시 시도해 주세요.')
+    }
     const p = resolveBin(process.platform === 'win32' ? name + '.exe' : name)
     if (!p) throw new Error(`${name} 을 찾을 수 없습니다. ${process.platform === 'win32'
       ? 'Apple Devices 앱(또는 iTunes)을 설치해 주세요.'
@@ -140,9 +154,9 @@ function create({ resolveBin, onLog }) {
   }
 
   const run = (name, args, ms = 10000) => new Promise((res, rej) => {
-    let path
-    try { path = bin(name) } catch (e) { return rej(e) }
-    execFile(path, args, { timeout: ms }, (err, stdout, stderr) => {
+    let exe
+    try { exe = bin(name) } catch (e) { return rej(e) }
+    execFile(exe, args, { timeout: ms }, (err, stdout, stderr) => {
       if (err) rej(new Error((stderr || err.message).trim()))
       else res(stdout)
     })
@@ -176,6 +190,72 @@ function create({ resolveBin, onLog }) {
       } catch (e) {
         return { ok: false, message: e.message }
       }
+    },
+
+    /**
+     * **현재 화면**을 캡처한다.
+     *
+     * iOS 17+ 는 스크린샷 서비스(DVT)가 개발자 터널을 통해야만 열린다. 다만 그 터널을
+     * `--userspace` 로 띄우면 **root 가 필요 없어** 앱이 직접 관리할 수 있다 — 테스터는
+     * 아무 설정도 하지 않는다. (kernel 터널은 sudo 가 필요하다)
+     *
+     * 터널은 한 번 띄워두고 재사용한다. 기동에 몇 초 걸리므로 첫 캡처만 느리다.
+     */
+    async screenshot(udid) {
+      const t = await this.ensureTunnel(udid)
+      if (!t.ok) return t
+      const tmp = path.join(os.tmpdir(), `droidbridge-ios-${Date.now()}.png`)
+      try {
+        await run('ios', ['screenshot', '--udid', udid, '--output', tmp], 30000)
+        const buf = fs.readFileSync(tmp)
+        try { fs.unlinkSync(tmp) } catch { }
+        log(`화면 캡처 ${(buf.length / 1024).toFixed(0)}KB`)
+        return { ok: true, buf }
+      } catch (e) {
+        try { fs.unlinkSync(tmp) } catch { }
+        return { ok: false, message: `캡처 실패: ${e.message}` }
+      }
+    },
+
+    /**
+     * userspace 터널을 확보한다. 이미 떠 있으면 그대로 쓴다.
+     *
+     * `ios tunnel ls` 로 살아 있는지 확인하는 편이 우리 프로세스 핸들을 믿는 것보다
+     * 정확하다 — 터널이 밖에서 죽거나, 다른 창이 이미 띄워뒀을 수 있다.
+     */
+    async ensureTunnel(udid) {
+      const alive = async () => {
+        try {
+          const out = await run('ios', ['tunnel', 'ls'], 8000)
+          const i = out.indexOf('[')
+          return i >= 0 && JSON.parse(out.slice(i)).some(t => t.udid === udid)
+        } catch { return false }
+      }
+      if (await alive()) return { ok: true }
+
+      if (!tunnelProc) {
+        let exe
+        try { exe = bin('ios') } catch (e) { return { ok: false, message: e.message } }
+        log('userspace 터널 기동 중...')
+        // go-ios 는 페어링 개인키(selfIdentity.plist)를 **작업 디렉터리에** 쓴다.
+        // 저장소가 공개라 프로젝트 안에 떨어뜨리면 안 되므로 임시 디렉터리에서 돌린다.
+        tunnelProc = spawn(exe, ['tunnel', 'start', '--userspace'],
+          { stdio: 'ignore', cwd: os.tmpdir() })
+        // spawn 실패를 처리하지 않으면 메인 프로세스가 통째로 죽는다
+        tunnelProc.on('error', e => { log('터널 실행 실패: ' + e.message); tunnelProc = null })
+        tunnelProc.on('close', () => { tunnelProc = null })
+      }
+      // 기동에 시간이 걸린다. 준비될 때까지 짧게 재확인한다.
+      for (let i = 0; i < 20; i++) {
+        await new Promise(r => setTimeout(r, 500))
+        if (await alive()) { log('터널 준비됨'); return { ok: true } }
+      }
+      return { ok: false, message: '터널이 준비되지 않았습니다 (기기 잠금 해제 후 다시 시도)' }
+    },
+
+    stopTunnel() {
+      if (tunnelProc) { tunnelProc.kill(); tunnelProc = null }
+      return { ok: true }
     },
 
     // syslog 를 logcat 형식으로 바꿔 흘린다 (렌더러 LogCat 패널 재사용).

@@ -93,7 +93,9 @@ Jira(`src/jira.js`)는 **REST API v2** 를 쓴다 — v3 는 description 을 ADF
 
 ### 4. iOS 지원 범위 (`src/ios-device.js`)
 
-**기기 인식 · 기기 정보 · 실시간 syslog 까지만 한다. 화면 미러링과 입력 주입은 지원하지 않는다.** libimobiledevice CLI 를 spawn 하는 얇은 래퍼이고, Android 쪽 코드(`mirror-bridge.js` / `hid-keyboard.js`)는 건드리지 않는다.
+**기기 인식 · 기기 정보 · 실시간 syslog · 화면 캡처까지 한다. 화면 미러링과 입력 주입은 지원하지 않는다.** CLI 를 spawn 하는 얇은 래퍼이고, Android 쪽 코드(`mirror-bridge.js` / `hid-keyboard.js`)는 건드리지 않는다.
+
+도구가 둘로 갈린다: 기기·정보·syslog 는 **libimobiledevice**(`idevice_id` / `ideviceinfo` / `idevicesyslog`), 캡처는 **go-ios**(npm 의존, `node_modules/go-ios/bin/ios`)다. 경로 체계가 달라 `bin()` 이 go-ios 만 따로 처리한다 — `resolveBin` 은 `bin/` 과 시스템 PATH 만 뒤진다.
 
 - **syslog 를 logcat threadtime 형식으로 변환해 기존 `logcat:data` 채널로 흘린다.** 렌더러가 `LOGCAT_PARSE_RE` 하나로 모든 줄을 읽으므로 레벨·태그·PID 필터와 검색이 그대로 재사용된다. 새 이벤트 채널을 만들지 말 것.
 - **물량이 Android 와 다르다.** 필터 없이 초당 약 1,300줄, `--quiet` 로도 초당 약 390줄이라 `LOGCAT_MAX_LINES`(3,000)를 몇 초면 넘긴다. 프로세스를 지정하면 초당 49줄까지 떨어진다. `-p` 와 `-q` 는 **같이 못 쓴다**(idevicesyslog 가 거부, include/exclude 상호배타).
@@ -107,7 +109,9 @@ Jira(`src/jira.js`)는 **REST API v2** 를 쓴다 — v3 는 description 을 ADF
 - **iPhone Mirroring(연속성)** — 같은 Apple ID 필수, API 없음.
 - **go-ios MJPEG** (`ios screenshot --stream`) — **동작한다.** `ios tunnel start --userspace` 는 root 도 필요 없어 앱이 직접 spawn 할 수 있고, `multipart/x-mixed-replace` 라 `<img>` 한 줄로 표시된다. 다만 **약 2.6fps**(프레임당 243KB)라 슬라이드쇼 수준이다. DVT 스크린샷 서비스를 반복 호출하는 구조라 구조적 한계다.
 - 60fps 를 내려면 기기의 하드웨어 H.264 인코더를 써야 하고, 경로는 AirPlay 수신기 직접 구현 또는 QuickTime USB 프로토콜 직접 구현뿐이다. 둘 다 수 주 규모이며 기성 Node 라이브러리가 없다(`quicktime_video_hack` 은 2022-08 이후 방치, npm 의 AirPlay 구현은 오디오 전용).
-- 스크린샷: `idevicescreenshot` 은 iOS 17+ 에서 터널이 필요해 막힌다. 다만 **AFC 는 터널 없이 되므로**(`afcclient get DCIM/100APPLE/…`) 기기에서 찍은 스크린샷을 회수하는 방식은 가능하다 — 검증만 했고 구현하지 않았다.
+- 스크린샷은 **go-ios + userspace 터널**로 현재 화면을 찍는다. iOS 17+ 는 스크린샷 서비스(DVT)가 개발자 터널을 통해야 열리는데, `ios tunnel start --userspace` 는 **root 가 필요 없어** 앱이 직접 띄운다(`ensureTunnel()`). 테스터는 아무 설정도 하지 않는다. 실측 첫 캡처 2.1초(터널 기동 포함), 이후 0.8초.
+  - 터널 생존 확인은 우리 프로세스 핸들이 아니라 `ios tunnel ls` 로 한다 — 밖에서 죽거나 다른 창이 이미 띄워뒀을 수 있다.
+  - AFC(`afcclient get DCIM/…`)로 기기에 저장된 스크린샷 파일을 꺼내는 방식도 터널 없이 동작하지만 **현재 화면이 아니라 과거 파일**이라 폐기했다. 캡처 버튼의 의미와 맞지 않는다.
 
 ### 5. 패킷 분석 프록시 (`src/proxy-server.js`, `src/cert-manager.js`)
 
@@ -163,4 +167,5 @@ MITM HTTP/HTTPS 프록시. CONNECT 터널을 가로채 node-forge 로 호스트�
 
 - **`productName` 을 한글로 되돌리지 말 것.** 한때 `"안드로이드 미러링"` 이었고, 그 상태로 만든 .app 은 기동 즉시 SIGTRAP(exit 133)으로 죽었다. 메시지는 `FATAL:electron_main_delegate_mac.mm(67)] Unable to find helper app` — Electron 이 **CFBundleName** 으로 헬퍼 앱 경로를 조립하는데 비ASCII 이름이 디스크상 이름과 맞지 않는다. `npm start`(개발 실행)는 멀쩡하므로 **패키징해서 실행해 보기 전에는 드러나지 않는다.**
   지금은 `productName: "DroidBridge"` 로 두고 표시 이름만 한글로 준다 — macOS 는 `mac.extendInfo.CFBundleDisplayName`, Windows 는 `nsis.shortcutName`. `CFBundleName` 까지 한글로 덮으면 같은 이유로 다시 죽으므로 **`CFBundleDisplayName` 만** 바꿔야 한다. (`userData` 경로는 `package.json` 의 `name`(=`droidbridge`)에서 오므로 이 변경에 영향받지 않는다.)
-- **npm 11 은 `electron` 의 postinstall 을 차단한다.** `npm install` 이 exit 0 여도 `node_modules/electron/dist/` 에 라이선스 파일만 남고 바이너리가 없다. `node node_modules/electron/install.js` 로 따로 받아야 하는데, 이때 `extract-zip` 이 첫 파일에서 멈추므로 캐시된 zip(`~/Library/Caches/electron/*/electron-v*.zip`)을 `ditto -x -k` 로 직접 풀고 `path.txt` 에 `Electron.app/Contents/MacOS/Electron` 을 써 주면 된다.
+- **npm 11 은 postinstall 을 차단한다 — `electron` 과 `go-ios` 둘 다 걸린다.** `npm install` 이 exit 0 여도 바이너리가 안 받아진다. go-ios 는 `node node_modules/go-ios/postinstall.js install` 로 따로 받는다(끝에 에러를 뱉어도 `bin/ios` 가 만들어졌으면 된 것이다). electron 은 아래 방법으로 받는다.
+- **electron 바이너리 받기.** `npm install` 이 exit 0 여도 `node_modules/electron/dist/` 에 라이선스 파일만 남고 바이너리가 없다. `node node_modules/electron/install.js` 로 따로 받아야 하는데, 이때 `extract-zip` 이 첫 파일에서 멈추므로 캐시된 zip(`~/Library/Caches/electron/*/electron-v*.zip`)을 `ditto -x -k` 로 직접 풀고 `path.txt` 에 `Electron.app/Contents/MacOS/Electron` 을 써 주면 된다.

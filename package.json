@@ -23,6 +23,16 @@
     "directories": {
       "output": "dist"
     },
+    "files": [
+      "**/*",
+      "!dist*/**",
+      "!bin/**",
+      "!docs/**",
+      "!.omc/**",
+      "!.notarize.env",
+      "!selfIdentity.plist",
+      "!*.{md,bat,command,ps1}"
+    ],
     "extraResources": [
       {
         "from": "bin/",

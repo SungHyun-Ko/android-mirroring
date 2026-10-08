@@ -54,7 +54,7 @@ UI 는 **3컬럼**이다: 도구 패널 · 디바이스(canvas) · LogCat. 마�
 
 ### 1. 미러링 (`src/mirror-bridge.js` ↔ `public/renderer.js`)
 
-**scrcpy 실행파일을 띄우지 않는다.** `scrcpy-server.jar` 만 기기에 push 해서 `app_process` 로 직접 구동하고, 와이어 프로토콜을 JS 로 파싱해 로컬 WebSocket 으로 중계한다. 렌더러가 WebCodecs 로 디코딩해 canvas 에 그린다. (README 의 "별도 scrcpy 창" 표기는 옛 구현 기준 — 현재는 앱 내부 canvas 다.)
+**scrcpy 실행파일을 띄우지 않는다.** `scrcpy-server.jar` 만 기기에 push 해서 `app_process` 로 직접 구동하고, 와이어 프로토콜을 JS 로 파싱해 로컬 WebSocket 으로 중계한다. 렌더러가 WebCodecs 로 디코딩해 canvas 에 그린다. scrcpy **실행파일**은 쓰지 않으므로 `bin/` 에 필요한 건 adb 와 `scrcpy-server` jar 뿐이다.
 
 주의할 점:
 

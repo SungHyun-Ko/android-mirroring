@@ -320,6 +320,16 @@
               <i class="ti ti-plug-connected"></i>연결 정보 입력
             </button>
           </div>
+          <div class="ctrl-card">
+            <div class="ctrl-title">Windows 프로그램 업데이트</div>
+            <div class="info-rows">
+              <div class="info-row"><span>상태</span><span id="updateStatus">Windows 배포본 전용</span></div>
+            </div>
+            <button class="btn-sm" id="updateCheckBtn" onclick="checkForAppUpdates()"
+              style="width:100%; justify-content:center; margin-top:10px">
+              <i class="ti ti-refresh"></i>업데이트 확인
+            </button>
+          </div>
           <!-- 저장 버튼은 하단 공용 버튼이 대신한다 (설정 탭에서는 '설정 저장'으로 바뀐다) -->
         </div>
       </div>

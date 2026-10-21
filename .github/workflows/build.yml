@@ -4,7 +4,12 @@ on:
     branches:
       - main
       - master
+    tags:
+      - 'v*'
   workflow_dispatch: # 깃허브 웹 화면에서 직접 빌드 버튼을 눌러 실행할 수 있게 해줍니다.
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -24,7 +29,7 @@ jobs:
           cache: 'npm'
 
       - name: Install Dependencies
-        run: npm install
+        run: npm ci
 
       # 윈도우 빌드를 위해 adb/scrcpy 실행 바이너리 준비
       - name: Prepare Windows Binaries
@@ -56,5 +61,40 @@ jobs:
           name: 안드로이드_미러링-${{ matrix.os }}
           path: |
             dist/*.exe
+            dist/*.blockmap
+            dist/latest.yml
             dist/*.dmg
           if-no-files-found: error
+
+  release:
+    name: Publish Windows Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Windows build
+        uses: actions/download-artifact@v4
+        with:
+          name: 안드로이드_미러링-windows-latest
+          path: release-assets
+
+      - name: Verify tag matches package version
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match package version v$version"
+          }
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: DroidBridge ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: release-assets/*

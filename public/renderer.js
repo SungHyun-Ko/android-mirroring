@@ -273,6 +273,7 @@ function wifiQuickConnect() {
 // ── 미러링 (WebCodecs + WebSocket) ────────────────────────────
 let mirrorWs = null   // WebSocket → bridge
 let videoDecoder = null  // WebCodecs VideoDecoder
+let mirrorSession = 0
 // 'uhid'(물리 키보드 에뮬레이션) | 'clipboard'(구식 폴백). bridge 가 판정해 알려준다.
 let keyboardMode = 'clipboard'
 
@@ -1187,6 +1188,33 @@ function copyLogcat() {
 
 window.db.onLogcatData(appendLogcat)
 window.db.onLogcatStopped(() => setLogcatRunning(false))
+window.db.onUpdateStatus(status => {
+  const label = $('updateStatus')
+  const button = $('updateCheckBtn')
+  if (label) {
+    if (status.state === 'checking') label.textContent = '업데이트 확인 중...'
+    else if (status.state === 'current') label.textContent = `최신 버전 (${status.version})`
+    else if (status.state === 'available') label.textContent = `새 버전 ${status.version} 다운로드 대기 중`
+    else if (status.state === 'downloading') label.textContent = `업데이트 다운로드 중 ${status.percent}%`
+    else if (status.state === 'downloaded') label.textContent = `버전 ${status.version} 설치 준비 완료`
+    else if (status.state === 'error') label.textContent = '업데이트 확인 실패'
+  }
+  if (button) button.disabled = ['checking', 'downloading', 'downloaded'].includes(status.state)
+  if (status.state === 'current' && status.manual) showToast(`최신 버전입니다 (${status.version})`)
+  if (status.state === 'error' && status.manual) showToast('업데이트 확인 실패: ' + status.message, true)
+  if (status.state === 'downloading') showToast(`업데이트 다운로드 중 ${status.percent}%`, false, true)
+  if (status.state === 'downloaded') showToast(`버전 ${status.version} 업데이트 준비 완료`)
+})
+
+async function checkForAppUpdates() {
+  const button = $('updateCheckBtn')
+  if (button) button.disabled = true
+  const result = await window.db.checkForUpdates()
+  if (!result.ok) {
+    if (button) button.disabled = false
+    if (result.reason === 'unavailable') showToast('배포 버전에서만 업데이트를 확인할 수 있습니다', true)
+  }
+}
 
 // copyMirrorLog / clearMirrorLog 는 BRIDGE LOG 패널과 함께 제거했다.
 // 브리지 로그는 이제 userData/mirror.log 파일에만 남는다.
@@ -1323,8 +1351,8 @@ function feedFrame(uint8) {
 }
 
 
-function connectMirrorWs(canvas, wsPort) {
-  if (mirrorWs) { mirrorWs.close(); mirrorWs = null }
+function connectMirrorWs(canvas, wsPort, session) {
+  if (mirrorWs) { const previous = mirrorWs; mirrorWs = null; previous.close() }
 
   // bridge가 준비될 때까지 재시도 (최대 10회, 600ms 간격)
   let attempts = 0
@@ -1337,18 +1365,20 @@ function connectMirrorWs(canvas, wsPort) {
   let wsFrameCount = 0
 
   const tryWs = () => {
-    if (!state.mirroring) return
+    if (session !== mirrorSession || !state.mirroring) return
     logMirror(`WS 연결 시도 ${attempts + 1}/${MAX}...`)
     const ws = new WebSocket(`ws://127.0.0.1:${wsPort}`)
     ws.binaryType = 'arraybuffer'
 
     ws.onopen = () => {
+      if (session !== mirrorSession || !state.mirroring) { ws.close(); return }
       mirrorWs = ws
       wsFrameCount = 0
       logMirror('★ WS 연결 성공!')
     }
 
     ws.onmessage = e => {
+      if (session !== mirrorSession || mirrorWs !== ws) return
       if (typeof e.data === 'string') {
         try {
           const msg = JSON.parse(e.data)
@@ -1396,7 +1426,9 @@ function connectMirrorWs(canvas, wsPort) {
     }
 
     ws.onerror = (ev) => {
+      if (session !== mirrorSession) return
       logMirror(`WS onerror 발생 (시도 ${attempts + 1}/${MAX})`)
+      if (mirrorWs === ws) mirrorWs = null
       ws.close()
       attempts++
       if (attempts < MAX) {
@@ -1408,14 +1440,12 @@ function connectMirrorWs(canvas, wsPort) {
         resetPhoneScreen()
       }
     }
-
     ws.onclose = (ev) => {
+      if (session !== mirrorSession || mirrorWs !== ws) return
       logMirror(`WS onclose (code=${ev.code}, reason=${ev.reason || 'none'}, 수신프레임=${wsFrameCount})`)
       mirrorWs = null
-      if (state.mirroring) {
-        state.mirroring = false
-        resetPhoneScreen()
-      }
+      state.mirroring = false
+      resetPhoneScreen()
     }
   }
 
@@ -1441,15 +1471,17 @@ async function startMirror() {
     el.scrollTop = el.scrollHeight
   })
 
+  const session = ++mirrorSession
   state.mirroring = true
   updateMirrorToggle()   // 시작은 오래 걸리므로 버튼부터 바로 뒤집는다
   const canvas = getMirrorCanvas()
 
   // 동적 웹소켓 포트 요청 및 초기화
   const wsPort = await window.db.initMirror()
+  if (session !== mirrorSession) return
 
   // WS 연결 시도 (bridge보다 먼저 시작 — retry로 버팀)
-  connectMirrorWs(canvas, wsPort)
+  connectMirrorWs(canvas, wsPort, session)
 
   // bridge 시작 (jar 푸시 + 서버 실행 + 소켓 연결)
   const r = await window.db.startMirror({
@@ -1458,6 +1490,7 @@ async function startMirror() {
     maxSize: state.maxSize || 0,
     fps,
   })
+  if (session !== mirrorSession) return
 
   if (!r.ok) {
     state.mirroring = false
@@ -1474,6 +1507,7 @@ async function startMirror() {
 }
 
 async function stopMirror() {
+  mirrorSession++
   stopDecoder()
   closeMirrorWs()
   configNalBuffer = null
@@ -1728,6 +1762,26 @@ function handleMirrorDrop(e) {
     : `${others[0].name} 외 ${others.length - 1}개를 전송하시겠습니까?`)
   $('pushConfirmOverlay')?.classList.add('open')
 }
+
+// Electron 은 dragover 를 취소한 영역에서만 파일 드롭을 허용한다.
+// 기기 화면 밖에서도 APK 를 앱 창에 놓을 수 있도록 창 전체의 파일 드래그를 수락한다.
+document.addEventListener('dragover', e => {
+  if (!Array.from(e.dataTransfer.types).includes('Files')) return
+  e.preventDefault()
+  e.dataTransfer.dropEffect = 'copy'
+})
+
+document.addEventListener('drop', e => {
+  if (!Array.from(e.dataTransfer.types).includes('Files')) return
+  e.preventDefault()
+  // 기기 화면은 자체 처리기가 APK 설치와 일반 파일 전송을 모두 담당한다.
+  if (e.target.closest?.('#phoneScreen')) return
+
+  const files = [...e.dataTransfer.files]
+  if (files.some(f => /\.(apk|xapk)$/i.test(f.name))) {
+    handleMirrorDrop(e)
+  }
+})
 
 async function confirmPush() {
   $('pushConfirmOverlay')?.classList.remove('open')

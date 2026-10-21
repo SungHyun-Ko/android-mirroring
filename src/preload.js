@@ -49,6 +49,11 @@ contextBridge.exposeInMainWorld('db', {
 
   // 세팅
   setupCheck: () => ipcRenderer.invoke('setup:check'),
+  checkForUpdates: () => ipcRenderer.invoke('app:update-check'),
+  onUpdateStatus: (cb) => {
+    ipcRenderer.removeAllListeners('app:update-status')
+    ipcRenderer.on('app:update-status', (_, status) => cb(status))
+  },
 
   // Jira — 토큰은 메인에만 있고 여기로 돌아오지 않는다
   jiraLoad: () => ipcRenderer.invoke('jira:load'),

@@ -144,8 +144,14 @@ class MirrorBridge {
             this.log('WS 수신 메시지 처리 오류: ' + e.message)
           }
         })
-        ws.on('close', () => { this.wsClient = null; this.log('★ renderer WS 끊김') })
-        ws.on('error', e => { this.wsClient = null; this.log('★ renderer WS 오류: ' + e.message) })
+        ws.on('close', () => {
+          if (this.wsClient === ws) this.wsClient = null
+          this.log('★ renderer WS 끊김')
+        })
+        ws.on('error', e => {
+          if (this.wsClient === ws) this.wsClient = null
+          this.log('★ renderer WS 오류: ' + e.message)
+        })
       })
     })
   }

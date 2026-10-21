@@ -16,7 +16,7 @@ Windows / macOS / Linux 지원 · iOS 는 기기 정보·로그·화면 캡처�
 | 보기 회전 | 툴바의 좌로 회전 · 우로 회전 | 기기는 그대로 두고 화면만 돌립니다. 세로 고정 앱도 눕혀 볼 수 있습니다 |
 | 화면 캡처 | 툴바 카메라 → 미리보기에서 **파일 저장** / **클립보드 복사** | 슬랙 등에 바로 붙여넣기 |
 | 화면 녹화 | 툴바 **REC** | MP4, 1회 최대 3분 (Android 제한) |
-| APK 설치 | 기기 화면에 `.apk` 를 끌어다 놓기 | 여러 개 한 번에 가능 |
+| APK 설치 | 앱 창 어디에나 `.apk` 를 끌어다 놓기 | 설치 확인 후 설치, 여러 개 한 번에 가능 |
 | 파일 전송 | 기기 화면에 파일을 끌어다 놓기 | 기기의 `/sdcard/Download/` 로 들어갑니다 |
 | LogCat | 오른쪽 패널 | [아래](#logcat) 참고 |
 | 현재 앱 | 미러링 탭 | 포그라운드 앱 표시, 데이터 삭제, 앱 정보, 크래시·ANR 감지 |
@@ -28,10 +28,12 @@ Windows / macOS / Linux 지원 · iOS 는 기기 정보·로그·화면 캡처�
 
 ### Windows
 
-`DroidBridge Setup <버전>.exe` 를 실행해 안내대로 설치합니다. 관리자 권한은 필요 없고, 바탕화면과 시작 메뉴에 **안드로이드 미러링** 바로가기가 생깁니다.
+`DroidBridge-Setup-<버전>.exe` 를 실행해 안내대로 설치합니다. 관리자 권한은 필요 없고, 바탕화면과 시작 메뉴에 **안드로이드 미러링** 바로가기가 생깁니다.
 adb 가 설치파일에 들어 있어 따로 설치할 것이 없습니다.
 
 > **"Windows의 PC 보호" 창이 뜨면** — 코드 서명을 하지 않은 설치파일이라 그렇습니다. **추가 정보 → 실행** 을 누르면 됩니다.
+
+프로그램은 실행 후 새 버전을 자동 확인합니다. 업데이트가 있으면 다운로드 여부를 묻고, 내려받은 뒤 지금 재시작하거나 앱 종료 시 설치할 수 있습니다. 설정 탭의 **업데이트 확인**으로 수동 확인도 가능합니다. 자동 업데이트는 GitHub Release에 배포된 Windows 버전에서 지원합니다. 자동 업데이트가 없는 기존 설치본은 새 버전 설치파일을 한 번 직접 실행해 업데이트해야 합니다.
 
 ### macOS
 
@@ -182,7 +184,7 @@ npm run check    # 문법 검사 + 자가진단 (커밋 전에)
 ### 배포용 빌드
 
 ```bash
-npm run build:win     # Windows 설치파일 → dist/DroidBridge Setup <버전>.exe
+npm run build:win     # Windows 설치파일 → dist/DroidBridge-Setup-<버전>.exe
 npm run build:mac     # macOS dmg — 미서명, CI 용
 npm run release:mac   # macOS dmg — Developer ID 서명 (사내 배포)
 npm run notarize:mac  # 위 + Apple 공증 (외부 배포, .notarize.env 필요)
@@ -190,6 +192,8 @@ npm run build:linux   # Linux AppImage
 ```
 
 `bin/` 이 설치파일에 그대로 들어가므로 **Windows 는 `Windows_setup.ps1` 로 채운 뒤 빌드**해야 adb 가 포함됩니다. macOS 는 **`Mac_설치파일_만들기.command`** 더블클릭으로도 dmg 를 만들 수 있습니다. 서명·공증 세부는 [CLAUDE.md](CLAUDE.md) 의 *빌드 / 배포* 항목을 보세요.
+
+Windows 업데이트를 배포하려면 `package.json` 버전을 올리고 `v<버전>` 태그(예: `v1.0.2`)를 푸시합니다. GitHub Actions가 버전과 태그가 일치하는지 확인한 뒤 Windows 설치파일, `latest.yml`, `.blockmap`을 GitHub Release에 게시합니다. 기존 브랜치 빌드와 수동 빌드는 CI artifact만 만들며 자동 업데이트 배포로 취급되지 않습니다.
 
 ### 프로젝트 구조
 

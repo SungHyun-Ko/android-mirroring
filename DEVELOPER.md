@@ -72,7 +72,7 @@ Android 단말과 scrcpy의 기본 텍스트 주입방식(`TYPE_INJECT_TEXT = 1`
 ### 3.2 GitHub Actions 자동 빌드 시스템 (`.github/workflows/build.yml`)
 * 코드를 푸시하거나 깃허브 웹 화면에서 직접 빌드를 실행할 시 클라우드 가상 머신(Windows, macOS)이 동시에 켜져 릴리즈 빌드를 진행합니다.
 * 빌드 단계 전 윈도우 환경용 바이너리 다운로드 스크립트(`./Windows_setup.ps1`)를 자동으로 돌려, 빌드 시 필요한 ADB 및 scrcpy 바이너리 세트를 자동으로 수급한 후 설치형 패키지에 패키징하도록 환경을 완비했습니다.
-* CI 감지 시 발생할 수 있는 릴리즈 토큰 누락 중단을 해결하기 위해 `package.json` 스크립트에 `--publish never` 인자를 명시하여 오로지 빌드 결과물(Artifacts)만 깃허브에 보관하도록 조율했습니다.
+* 일반 브랜치 빌드는 `--publish never` 로 GitHub Actions artifact 만 만든다. `v<버전>` 태그 빌드는 같은 설치파일과 업데이트 메타데이터(`latest.yml`, `.blockmap`)를 GitHub Release 에 별도로 게시하며, 태그와 `package.json` 버전이 일치해야 한다.
 
 ### 3.3 macOS 설치 파일 빌드 도우미 (`Mac_설치파일_만들기.command`)
 * Mac 보안 제한 상 윈도우에서 `.dmg` 크로스 빌드가 불가하므로 맥 환경 빌드 파일을 더블클릭 만으로 작성해주는 스크립트 파일입니다.

@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, clipboard, nativeImage } = require('electron')
+const { autoUpdater } = require('electron-updater')
 const path = require('path')
 const { spawn, execFile, execSync } = require('child_process')
 const fs = require('fs')
@@ -73,6 +74,9 @@ let mirror = null   // MirrorBridge 인스턴스
 let recordingProcess = null
 let proxyServer = null
 let certManager = null
+let updateCheckInProgress = false
+let updatePromptOpen = false
+let manualUpdateCheck = false
 
 // 미러링 로그를 파일로도 남긴다. 사용자가 "안 된다"고 할 때 이 파일 하나면 원인이
 // 잡힌다. 앱 시작마다 비우므로 한 세션치를 넘어 자라지 않는다.
@@ -83,6 +87,97 @@ try { fs.writeFileSync(MIRROR_LOG, '') } catch { }
 function logMirror(msg) {
   mainWindow?.webContents.send('mirror:log', msg)
   try { fs.appendFileSync(MIRROR_LOG, `${new Date().toISOString()} ${msg}\n`) } catch { }
+}
+
+function sendUpdateStatus(status) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.webContents.send('app:update-status', status)
+}
+
+function startUpdateCheck(manual = false) {
+  if (!app.isPackaged || platform !== 'win32' || updateCheckInProgress) {
+    return Promise.resolve({ ok: false, reason: 'unavailable' })
+  }
+  updateCheckInProgress = true
+  manualUpdateCheck = manual
+  sendUpdateStatus({ state: 'checking', manual })
+  return autoUpdater.checkForUpdates()
+    .then(() => ({ ok: true }))
+    .catch(error => {
+      logMirror(`[업데이트] 확인 실패: ${error.message}`)
+      sendUpdateStatus({ state: 'error', message: error.message, manual })
+      manualUpdateCheck = false
+      return { ok: false, message: error.message }
+    })
+    .finally(() => { updateCheckInProgress = false })
+}
+
+function setupAutoUpdater() {
+  if (!app.isPackaged || platform !== 'win32' || isDev) return
+
+  autoUpdater.autoDownload = false
+  autoUpdater.autoInstallOnAppQuit = true
+  autoUpdater.on('checking-for-update', () => logMirror('[업데이트] 새 버전 확인 중'))
+  autoUpdater.on('update-not-available', info => {
+    logMirror(`[업데이트] 최신 버전 사용 중 (${info.version})`)
+    sendUpdateStatus({ state: 'current', version: info.version, manual: manualUpdateCheck })
+    manualUpdateCheck = false
+  })
+  autoUpdater.on('update-available', async info => {
+    logMirror(`[업데이트] 새 버전 발견: ${info.version}`)
+    if (updatePromptOpen) return
+    updatePromptOpen = true
+    manualUpdateCheck = false
+    try {
+      const { response } = await dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        title: '업데이트 확인',
+        message: `새 버전 ${info.version}을(를) 사용할 수 있습니다.`,
+        detail: '지금 다운로드하고 설치할까요?',
+        buttons: ['다운로드', '나중에'],
+        defaultId: 0,
+        cancelId: 1,
+      })
+      if (response !== 0) {
+        sendUpdateStatus({ state: 'available', version: info.version })
+        return
+      }
+      sendUpdateStatus({ state: 'downloading', percent: 0 })
+      logMirror(`[업데이트] ${info.version} 다운로드 시작`)
+      await autoUpdater.downloadUpdate()
+    } catch (error) {
+      logMirror(`[업데이트] 다운로드 실패: ${error.message}`)
+      sendUpdateStatus({ state: 'error', message: error.message, manual: true })
+    } finally {
+      updatePromptOpen = false
+    }
+  })
+  autoUpdater.on('download-progress', progress => {
+    sendUpdateStatus({ state: 'downloading', percent: Math.floor(progress.percent) })
+  })
+  autoUpdater.on('update-downloaded', async info => {
+    logMirror(`[업데이트] ${info.version} 다운로드 완료`)
+    sendUpdateStatus({ state: 'downloaded', version: info.version })
+    try {
+      const { response } = await dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        title: '업데이트 준비 완료',
+        message: `${info.version} 업데이트를 설치할 준비가 됐습니다.`,
+        detail: '지금 다시 시작하거나, 앱을 종료할 때 설치할 수 있습니다.',
+        buttons: ['지금 다시 시작', '종료할 때 설치'],
+        defaultId: 0,
+        cancelId: 1,
+      })
+      if (response === 0) autoUpdater.quitAndInstall()
+    } catch (error) {
+      logMirror(`[업데이트] 설치 안내 창을 열지 못했습니다: ${error.message}`)
+    }
+  })
+  autoUpdater.on('error', error => {
+    logMirror(`[업데이트] 오류: ${error.message}`)
+    sendUpdateStatus({ state: 'error', message: error.message, manual: manualUpdateCheck })
+    manualUpdateCheck = false
+  })
 }
 
 function getMirror() {
@@ -155,9 +250,19 @@ function createWindow() {
   })
 }
 
-app.whenReady().then(createWindow)
+app.whenReady().then(() => {
+  setupAutoUpdater()
+  createWindow()
+  if (app.isPackaged && platform === 'win32' && !isDev) {
+    mainWindow.webContents.once('did-finish-load', () => {
+      setTimeout(() => { startUpdateCheck(false) }, 2000)
+    })
+  }
+})
 app.on('window-all-closed', () => { if (platform !== 'darwin') app.quit() })
 app.on('activate', () => { if (!mainWindow) createWindow() })
+
+ipcMain.handle('app:update-check', () => startUpdateCheck(true))
 
 // ── ADB 유틸 ──────────────────────────────────────────────────
 function runAdb(args) {

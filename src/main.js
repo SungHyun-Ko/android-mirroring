@@ -652,6 +652,26 @@ ipcMain.handle('adb:activity-info', async (_, { serial, activityName }) => {
 
 // ── 현재 앱 / 기기 정보 ────────────────────────────────────────
 
+// LogCat 검색어 `package:` 용 — 프로세스 이름에 pkg 가 들어간 프로세스의 PID 들.
+// logcat 줄에는 패키지명이 없고 PID 만 있어서 이름 → PID 로 바꿔 거른다(Android Studio 와 같은 방식).
+// 'net.zerotalk.user' 는 하위 프로세스 'net.zerotalk.user:remote' 까지 잡는다(포함 검색).
+ipcMain.handle('app:pids', async (_, { serial, pkg }) => {
+  if (!serial || !pkg) return { ok: false, pids: [] }
+  const want = String(pkg).toLowerCase()
+  const parse = (out, pidCol) => out.split('\n').slice(1)
+    .map(l => l.trim().split(/\s+/))
+    .filter(c => c.length >= 2 && /^\d+$/.test(c[pidCol]) && c[c.length - 1].toLowerCase().includes(want))
+    .map(c => ({ pid: c[pidCol], name: c[c.length - 1] }))
+  try {
+    // Android 8+ (toybox): PID 와 이름만. 그 아래 버전은 -o 를 몰라 실패하거나 빈 결과를 내므로
+    // 옛 형식으로 한 번 더 본다 (USER PID PPID … NAME — PID 가 둘째 칸, 이름이 마지막 칸).
+    let list = []
+    try { list = parse(await runAdb(['-s', serial, 'shell', 'ps', '-A', '-o', 'PID,NAME']), 0) } catch { }
+    if (!list.length) list = parse(await runAdb(['-s', serial, 'shell', 'ps']), 1)
+    return { ok: true, pids: list.map(p => p.pid), names: [...new Set(list.map(p => p.name))] }
+  } catch (e) { return { ok: false, pids: [], message: String(e) } }
+})
+
 // 포그라운드 앱의 버전과 PID. PID 는 LogCat 을 이 앱만 보이게 거르는 데 쓴다.
 ipcMain.handle('app:info', async (_, { serial, pkg }) => {
   if (!pkg) return { ok: false, message: '패키지를 알 수 없습니다' }

@@ -79,6 +79,7 @@ contextBridge.exposeInMainWorld('db', {
 
   // 현재 앱 / 기기 정보
   appInfo: (opts) => ipcRenderer.invoke('app:info', opts),
+  appPids: (opts) => ipcRenderer.invoke('app:pids', opts),   // LogCat 검색어 package:
   appAction: (opts) => ipcRenderer.invoke('app:action', opts),
   deviceInfo: (serial) => ipcRenderer.invoke('device:info', serial),
 

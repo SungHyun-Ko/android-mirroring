@@ -99,7 +99,7 @@
       </div>
       <div class="logcat-filterbar">
         <span class="logcat-title">LOGCAT</span>
-        <input type="text" id="logcatFilter" class="logcat-filter" title="tag: / level: / message: / pid: / tid: 로 항목을 지정할 수 있습니다. 여러 항목은 AND, 앞에 - 를 붙이면 제외, 공백이 있으면 따옴표로 묶으세요." placeholder="tag:Foo level:E message:내용 -tag:Bar"
+        <input type="text" id="logcatFilter" class="logcat-filter" title="tag: / level: / message: / pid: / tid: / package: 로 항목을 지정할 수 있습니다. package: 는 앱 패키지 이름으로 거릅니다(앱을 다시 실행해도 따라감). 여러 항목은 AND, 앞에 - 를 붙이면 제외, 공백이 있으면 따옴표로 묶으세요." placeholder="package:com.foo tag:Foo level:E -tag:Bar"
           oninput="renderLogcat()">
         <button class="btn-icon" onclick="clearLogcat()" title="로그 지우기"><i class="ti ti-trash"></i></button>
         <button class="btn-icon" id="logcatToggle" onclick="toggleLogcat()" title="시작"><i class="ti ti-player-play"></i></button>

@@ -31,6 +31,8 @@ let mirrorStarting = null     // 진행 중인 startMirror() — 다음 기기 �
 // 기기 전환(고르기·해제·자동 재시작)은 한 줄로 세운다. 겹치면 미러링 서버가 두 개 뜬다.
 let deviceOpChain = Promise.resolve()
 let followQueued = false
+// LogCat 검색어 package: — 검색한 패키지 이름 → 그 프로세스들의 PID 집합 (logcat 줄엔 PID 만 있다)
+const pkgPids = new Map()
 
 // ── 보기 회전 ──────────────────────────────────────────────────
 // 기기를 실제로 돌리지 않고 우리가 그리는 방향만 90°씩 바꾼다.
@@ -1101,6 +1103,7 @@ function appendLogcat(chunk) {
   }
   if (logcatLines.length > LOGCAT_MAX_LINES) logcatLines = logcatLines.slice(-LOGCAT_MAX_LINES)
   checkIssue(parts)
+  if (pkgPids.size) notePkgStarts(parts)
   if (logcatDirty) return
   logcatDirty = true
   requestAnimationFrame(() => { logcatDirty = false; renderLogcat() })
@@ -1166,9 +1169,45 @@ function setLogcatPreset(v) {
   renderLogcat()
 }
 
-// Android Studio 스타일 질의: tag:Foo level:E message:"some text" pid:1234 -tag:Bar 자유문자열
+// Android Studio 스타일 질의: tag:Foo level:E message:"some text" pid:1234 package:com.foo -tag:Bar 자유문자열
 // 항목은 모두 AND, 앞에 '-' 를 붙이면 제외. 값에 공백이 있으면 따옴표로 묶는다.
-const QUERY_KEYS = { tag: 1, level: 1, message: 1, msg: 1, pid: 1, tid: 1 }
+const QUERY_KEYS = { tag: 1, level: 1, message: 1, msg: 1, pid: 1, tid: 1, package: 1 }
+
+// ── package: 검색어 ──
+// logcat 줄에는 패키지 이름이 없고 PID 만 있다. 그래서 검색어의 패키지 이름을 기기의 프로세스
+// 목록에서 PID 로 바꿔 둔다(Android Studio 와 같은 방식). 예전엔 package: 를 몰라 통째로 일반
+// 문자열로 찾았고, 그런 글자가 든 줄은 없으니 화면이 비었다.
+const PKG_REFRESH_MS = 3000
+function pkgPidSet(value) {
+  let e = pkgPids.get(value)
+  if (!e) { e = { pids: new Set(), at: 0, busy: false }; pkgPids.set(value, e) }
+  // 앱을 다시 띄우면 PID 가 바뀐다 — 그릴 때마다 오래됐으면 다시 찾는다 (3초에 한 번까지)
+  if (!e.busy && Date.now() - e.at > PKG_REFRESH_MS && state.serial && !isIos()) {
+    e.busy = true
+    window.db.appPids({ serial: state.serial, pkg: value }).then(r => {
+      e.busy = false
+      e.at = Date.now()
+      const before = e.pids.size
+      // 예전 PID 는 지우지 않는다 — 앱을 재실행해도 그 전 로그가 계속 보이게
+      for (const p of r?.pids || []) e.pids.add(String(p))
+      if (e.pids.size !== before) renderLogcat()
+    }).catch(() => { e.busy = false; e.at = Date.now() })
+  }
+  return e.pids
+}
+
+// 앱이 새로 뜨는 순간 시스템이 남기는 줄로 PID 를 바로 얹는다 — 3초를 기다리지 않게.
+//   "I ActivityManager: Start proc 26074:net.zerotalk.user/u0a345 for pre-top-activity ..."
+const START_PROC_RE = /Start proc (\d+):([^\s/]+)/
+function notePkgStarts(lines) {
+  for (const l of lines) {
+    if (!l.includes('Start proc')) continue
+    const m = START_PROC_RE.exec(l)
+    if (!m) continue
+    const name = m[2].toLowerCase()
+    for (const [value, e] of pkgPids) if (name.includes(value)) e.pids.add(m[1])
+  }
+}
 const LEVEL_WORDS = { VERBOSE: 'V', DEBUG: 'D', INFO: 'I', WARN: 'W', WARNING: 'W', ERROR: 'E', FATAL: 'F', ASSERT: 'A' }
 
 function parseLogQuery(q) {
@@ -1198,6 +1237,9 @@ function matchesTerm(line, parsed, term) {
     // 레벨은 '이상'으로 본다 (Android Studio 와 같은 규칙)
     const want = LEVEL_WORDS[term.value.toUpperCase()] || term.value[0].toUpperCase()
     hit = !!parsed && LEVEL_RANK[parsed.level] >= LEVEL_RANK[want]
+  } else if (term.key === 'package') {
+    // iOS 는 PID 를 이름으로 바꿀 길이 없어 프로세스 이름(태그)으로 본다
+    hit = !!parsed && (isIos() ? parsed.tag.toLowerCase().includes(term.value) : term.pids.has(parsed.pid))
   } else {
     hit = !!parsed && String(parsed[term.key] || '').toLowerCase().includes(term.value)
   }
@@ -1208,6 +1250,8 @@ function matchesTerm(line, parsed, term) {
 function visibleLogcatLines() {
   const q = ($('logcatFilter')?.value || '').trim()
   const terms = q ? parseLogQuery(q) : []
+  // package: 는 줄마다가 아니라 그릴 때 한 번 PID 집합을 꺼내 둔다
+  for (const t of terms) if (t.key === 'package') t.pids = pkgPidSet(t.value)
   const preset = LOG_PRESETS[logcatPreset]
   if (!terms.length && !logcatPidFilter && !logcatMinLevel && !preset) return logcatLines
 
@@ -1820,6 +1864,7 @@ async function releaseDevice() {
   currentPid = null
   logcatPidFilter = null
   deviceInfo = null
+  pkgPids.clear()   // PID 는 기기마다 다르다
   clearLogcat()
   clearIssue()
   setClass('connBadge', 'conn-badge disconnected')

@@ -88,7 +88,8 @@ UI 는 **3컬럼**이다: 도구 패널 · 디바이스(canvas) · 오른쪽 패
 `adb logcat -v threadtime -T 200` 을 spawn 해 `logcat:data` 청크로 흘린다. 렌더러 쪽 제약이 촘촘하다:
 
 - 청크는 **줄 중간에서 끊긴다** — `logcatPending` 에 꼬리를 물려 처리한다. 화면 보관은 `LOGCAT_MAX_LINES = 3000` 까지(넘으면 앞에서 버림, DOM 이 감당 못 함).
-- 레벨·프리셋·쿼리(`tag:` / `level:` / `pid:` …) 필터와 현재 패키지 PID 필터가 겹쳐 걸린다. 파싱은 `LOGCAT_PARSE_RE` 한 곳이다.
+- 레벨·프리셋·쿼리(`tag:` / `level:` / `pid:` / `package:` …) 필터와 현재 패키지 PID 필터가 겹쳐 걸린다. 파싱은 `LOGCAT_PARSE_RE` 한 곳이다.
+- **`package:` 는 줄에서 찾지 않는다 — logcat 줄엔 패키지 이름이 없고 PID 만 있다.** 검색어의 이름을 `app:pids`(`ps -A -o PID,NAME`, 옛 Android 는 `ps`)로 PID 집합으로 바꿔 거른다. 앱을 다시 띄우면 PID 가 바뀌므로 그릴 때마다 3초에 한 번까지 다시 찾고, `ActivityManager: Start proc <PID>:<이름>` 줄이 보이면 기다리지 않고 바로 얹는다. 옛 PID 는 지우지 않아 재실행 전 로그도 계속 보인다. 예전엔 `package:` 를 몰라 일반 문자열로 찾았고 화면이 비었다.
 - Activity 폴링으로 얻은 포그라운드 패키지를 기준으로 `app:info` / `app:action`(force-stop·clear·재실행)이 동작한다.
 
 Jira(`src/jira.js`)는 **REST API v2** 를 쓴다 — v3 는 description 을 ADF JSON 으로만 받아 QA 리포트 평문을 넣을 수 없다. 토큰은 `safeStorage` 로 암호화해 `userData/jira.json`(mode 0600)에 두고 **렌더러로는 절대 돌려보내지 않는다**(`hasToken` 불리언만). `jira:open` 은 atlassian.net / id.atlassian.com 만 허용하는 화이트리스트가 걸려 있다. 스코프형 토큰이면 사이트 주소가 401 이라 `api.atlassian.com/ex/jira/<cloudId>` 게이트웨이로 폴백하고 그 경로를 캐시한다 — 이 분기는 자가진단이 덮고 있다.

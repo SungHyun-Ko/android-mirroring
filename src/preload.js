@@ -61,6 +61,22 @@ contextBridge.exposeInMainWorld('db', {
   jiraCreate: (issue) => ipcRenderer.invoke('jira:create', issue),
   jiraOpen: (url) => ipcRenderer.invoke('jira:open', url),
 
+  // 멀티 디바이스 — 연결된 모든 기기의 상태·저장 (device-hub.js)
+  deviceList: () => ipcRenderer.invoke('device:list'),
+  deviceAddWifi: (ip, port) => ipcRenderer.invoke('device:add-wifi', ip, port),
+  deviceToWifi: (id) => ipcRenderer.invoke('device:to-wifi', id),
+  deviceRemove: (id) => ipcRenderer.invoke('device:remove', id),
+  deviceSetRecording: (id, on) => ipcRenderer.invoke('device:set-recording', id, on),
+  deviceOpenFolder: (id) => ipcRenderer.invoke('device:open-folder', id),
+  onDeviceUpdate: (cb) => {
+    ipcRenderer.removeAllListeners('device:update')
+    ipcRenderer.on('device:update', (_, list) => cb(list))
+  },
+  recSettings: () => ipcRenderer.invoke('logcat:rec-settings'),
+  recSettingsSave: (s) => ipcRenderer.invoke('logcat:rec-settings-save', s),
+  chooseLogDir: (current) => ipcRenderer.invoke('dialog:chooseLogDir', current),
+  adbRestartServer: () => ipcRenderer.invoke('adb:restart-server'),
+
   // 현재 앱 / 기기 정보
   appInfo: (opts) => ipcRenderer.invoke('app:info', opts),
   appAction: (opts) => ipcRenderer.invoke('app:action', opts),

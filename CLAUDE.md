@@ -21,6 +21,7 @@ node src/jira.js          # Jira 모듈 자가진단 (fetch 를 가짜로 바꿔
 node src/hid-keyboard.js  # HID 리포트/디스크립터 자가진단
 node src/mirror-bridge.js # session_meta 레이아웃 판별 자가진단
 node src/ios-device.js    # iOS syslog 파싱·logcat 변환 자가진단
+node src/device-hub.js    # 멀티 디바이스 — 가짜 adb 로 꽂기·합치기·넘어가기·복구·이어 받기·보관 정리
 npm run check             # 위 전부 + renderer.js 문법 검사
 ```
 
@@ -32,7 +33,7 @@ npm run check             # 위 전부 + renderer.js 문법 검사
 
 ## 아키텍처
 
-Electron 3-프로세스 구조에, **서로 독립적인 백엔드 5개**가 물려 있다.
+Electron 3-프로세스 구조에, **서로 독립적인 백엔드 6개**가 물려 있다 (아래 그림 + 멀티 디바이스 `device-hub.js`, 7절).
 
 ```
 public/renderer.js ──(window.db.*)──> src/preload.js ──(ipcRenderer)──> src/main.js
@@ -50,7 +51,7 @@ adb forward tcp → scrcpy 소켓 파싱 → 로컬 WS
 renderer: WebSocket → WebCodecs VideoDecoder → <canvas>
 ```
 
-UI 는 **3컬럼**이다: 도구 패널 · 디바이스(canvas) · LogCat. 마크업 순서는 device → logcat → tool 이고 **CSS `order` 로 재배치**하므로(`style.css` 의 `.tool-col{order:1}` …) 화면 위치와 DOM 순서가 다르다.
+UI 는 **3컬럼**이다: 도구 패널 · 디바이스(canvas) · 오른쪽 패널(기기 바둑판 / LogCat 탭). 마크업 순서는 device → logcat → tool 이고 **CSS `order` 로 재배치**하므로(`style.css` 의 `.tool-col{order:1}` …) 화면 위치와 DOM 순서가 다르다.
 
 ### 1. 미러링 (`src/mirror-bridge.js` ↔ `public/renderer.js`)
 
@@ -65,6 +66,7 @@ UI 는 **3컬럼**이다: 도구 패널 · 디바이스(canvas) · LogCat. 마�
   - **증상 단서: 해상도 로그에 `2147483648`(=`0x80000000`, 프레임 헤더 PTS 상위 4B)이 보이면 이 블록을 잘못 읽은 것이다.** 프레임 경계까지 밀려 SPS/PPS 가 깨지므로 겉으로는 디코더 쪽 `A key frame is required after configure()` 로 나타나 원인을 놓치기 쉽다.
   - 레이아웃이 왜 갈리는지는 아직 확정하지 못했다. 1순위 후보는 **jar 출처**다 — `ensureJar()` 는 `/opt/homebrew/share/scrcpy/scrcpy-server` 등 **시스템 설치본을 GitHub 다운로드본보다 먼저** 집는다(`mirror-bridge.js:131-135`). brew 로 scrcpy 를 깐 기기는 다른 버전 jar 를 쓰게 된다. 기기 차이는 아니다(같은 SM-G981N 이 양쪽 형태로 관측됐다). 문제가 생기면 로그의 `jar @ ...` 줄부터 볼 것.
   - 세 번째 레이아웃이 나오면 `해상도 파싱 실패 — 헤더 앞 12B: <hex>` 가 로그에 남는다. 그 hex 를 자가진단 케이스로 추가하면 된다.
+- **미러링 시작·중지는 한 줄로 세운다 — 세 군데가 같이 지킨다.** `MirrorBridge` 는 한 번에 한 세션만 다루는데, 기기 바꾸기를 넣은 뒤 시작이 끝나기 전에 다른 시작이 끼어들어 **서버가 두 개 뜨고**, 새 연결에 이전 기기의 해상도가 가고, **지난 세션의 늦은 웹소켓 닫힘 이벤트가 새 세션 화면을 지웠다**(영상은 들어오는데 화면이 안 나옴 — 실기기에서 겪었다). ① 메인 `inMirrorQueue` 가 `mirror:init/start/stop` 을 순서대로 ② 렌더러 `queueDeviceOp` 가 기기 고르기·해제·자동 재시작을 순서대로(다음 전환은 `mirrorStarting` 을 기다린다) ③ `mirrorSession` 번호로 지난 세션의 웹소켓 이벤트를 무시한다. 줄 안에서 도는 작업이 `selectDevice()` 를 다시 부르면 자기 뒤 작업을 기다리다 멈추므로 `doSelectDevice()` 를 직접 부른다.
 - 비디오 소켓과 제어 소켓은 **같은 forward 포트로 순서대로 두 번 connect** 해서 얻는다. 둘 다 성공해야 스트리밍이 시작된다. `controlSock` 은 현재 **쓰기 전용**이다 — 역방향 스트림(기기 클립보드 응답 등)은 아직 아무도 읽지 않는다.
 - 디코더 코덱이 `avc1.640020` 으로 하드코딩되어 있고, config 패킷(SPS+PPS)은 `configNalBuffer` 에 캐시해뒀다가 IDR 앞에 수동으로 붙여야 한다 (`feedFrame()`). VideoDecoder 는 description 없이 config 만으로는 디코딩하지 못한다.
 - jar 버전 문자열은 `app_process` 인자로 그대로 넘어가고 **서버가 자기 버전과 다르면 기동을 거부한다** (`IllegalArgumentException: The server version (4.1) does not match the client (...)`). 버전은 ① `ensureJar()` 의 다운로드 경로가 알려준 값 → ② `_jarVer()` 의 파일명 파싱 → ③ `_probeJarVer()` 가 서버에 직접 물어본 값 순으로 정해진다. ③ 덕분에 파일명에 버전이 없는 jar(`Windows_setup.ps1` 이 zip 에서 복사한 것, brew 설치본)도 그냥 동작하므로 **리네임은 필요 없다.** `FALLBACK_VER` 는 ③까지 실패했을 때만 쓰이는 최후값이라 정확할 필요가 없다.
@@ -122,10 +124,23 @@ MITM HTTP/HTTPS 프록시. CONNECT 터널을 가로채 node-forge 로 호스트�
 
 캡처·녹화·APK 설치·파일 전송·클립보드·키이벤트는 `main.js` 에서 adb 를 직접 호출한다. 결과는 예외를 던지지 않고 **`{ ok, message }` 객체로 반환**하는 것이 이 코드베이스 전체의 규약이다 (`{ ok:false, canceled:true }` 로 사용자 취소를 구분하기도 한다).
 
+### 7. 멀티 디바이스 — 여러 기기 LogCat 자동 저장 (`src/device-hub.js`)
+
+고른 1대의 미러링·실시간 LogCat 과 **따로**, 메인이 연결된 모든 기기(USB·Wi-Fi)의 연결을 유지하고 **저장을 켠 기기**의 logcat 을 파일로 저장한다. **새로 연결한 기기는 저장이 꺼진 채로 시작한다**(사용자 요청) — 카드의 ● 로 기기마다 켜고, 그 값은 `multi-device.json` 의 `deviceRec` 에 id 별로 남는다. 고른 적 없는 기기의 기본값은 설정 탭 '새로 연결한 기기 바로 저장'(`autoNew`, 기본 끔). 렌더러는 `device:update` 스냅샷으로 바둑판만 그린다. 설계와 미검증 항목은 `docs/MULTI-DEVICE-PLAN.md`.
+
+- **화면의 LogCat 은 여전히 `logcat:start` 의 별도 스트림이다.** 저장 스트림과 섞지 말 것 — 필터·Jira 일시정지 같은 기존 LogCat 동작이 그 스트림에 묶여 있다.
+- **기기 id 는 `ro.serialno`, 모델명은 `ro.product.model` 만 믿는다.** 같은 폰이 USB 시리얼과 `ip:port` 로 두 번 잡혀도 id 로 한 장이 된다. `adb devices -l` 의 `model:` 은 표기가 달라(`SM_G973N` → `SM G973N` vs `SM-G973N`) 폴더 이름이 갈리고 재시작 후 이어 받기가 끊긴다 — 자가진단이 실제로 잡은 버그다.
+- **끊김은 연결 방식이 아니라 adb 목록의 상태로 판단한다.** `offline` 이면 `reconnect` → `reconnect device` → `reconnect offline` (Wi-Fi 는 끊고 다시 `connect` 까지). **`adb kill-server` 는 자동으로 쓰지 않는다** — 모든 기기 연결이 한꺼번에 끊긴다. 설정 탭의 수동 버튼으로만 둔다.
+- **`adb connect` 는 실패해도 종료 코드가 0 이고 결과를 표준 출력에 쓴다** (실측). 문구는 OS 언어를 따르므로(한국어 Windows: `…연결을 거부했으므로 연결하지 못했습니다. (10061)`) **소켓 오류 코드로 판별한다** — `10061` 거부 = 재부팅으로 포트가 풀림, `10060` 시간 초과 = 폰이 네트워크에 없음.
+- 파일: `<저장 위치>/<모델>_<serialno>/<YYYY-MM-DD>/<HH-mm>.log`. **줄의 시각(기기 시계)으로 파일을 고르고**, 열어 둔 fd 에 바로 쓴다(앱이 죽어도 남게). 보관 기간 정리는 **`.droidbridge` 표시 파일이 있는 기기 폴더 안만** 지운다 — 저장 위치를 다른 것이 섞인 폴더로 골라도 남의 폴더를 건드리지 않게.
+- 설정과 기억해 둔 Wi-Fi 고정 주소는 `userData/multi-device.json`. 재연결을 메인이 맡아서 `localStorage` 가 아니다.
+- **하단 '기기 해제'는 더 이상 Wi-Fi 의 adb 연결을 끊지 않는다** — 그 연결로 저장이 돌고 있다(`releaseDevice()`). 목록에서 아예 빼는 건 카드의 '목록에서 제거'.
+- 렌더러: `.logcat-col` 안에 탭(`#devicePane` / `#logcatPane`). LogCat 탭을 숨겼다 보이면 `logcatScrollMemo` 로 스크롤을 되살린다 — 숨긴 동안 높이가 0 이라 맨 아래 따라가기가 풀린다. 바둑판은 HTML 이 바뀔 때만 다시 그린다(누르는 도중에 카드가 바뀌면 클릭이 씹힌다).
+
 ## 코드 수정 시 알아야 할 규칙
 
 - **IPC 를 추가하면 반드시 3곳을 같이 고친다**: `main.js` 의 `ipcMain.handle` → `preload.js` 의 `contextBridge` 노출 → `renderer.js` 의 `window.db.*` 호출. 채널 접두사는 `adb:` / `mirror:` / `proxy:` / `dialog:` / `setup:` / `capture:` / `logcat:` / `jira:` / `app:` / `device:` / `window:`.
-- **메인 → 렌더러 푸시 이벤트(`mirror:log`, `logcat:data`, `logcat:stopped`, `proxy:packet`)는 preload 에서 `removeAllListeners` 후 등록한다.** 재연결마다 리스너가 쌓이면 같은 줄이 여러 번 그려진다.
+- **메인 → 렌더러 푸시 이벤트(`mirror:log`, `logcat:data`, `logcat:stopped`, `proxy:packet`, `device:update`)는 preload 에서 `removeAllListeners` 후 등록한다.** 재연결마다 리스너가 쌓이면 같은 줄이 여러 번 그려진다.
 - **렌더러에 모듈 시스템이 없다.** `renderer.js` 는 클래식 `<script>` 한 개이고 모든 함수가 전역이며, `index.html` 이 인라인 `onclick="fn()"` 으로 호출한다. UI 동작 추가 = 전역 함수 + onclick. (`src/` 는 CommonJS.) DOM 요소가 없어도 죽지 않도록 `setText()` / `$()` 를 거치는 관행이 있다 — 탭에서 내려간 페이지의 마크업이 그대로 남아 있기 때문이다.
 - **레이아웃 상수가 CSS 와 JS 양쪽에 있다.** `renderer.js` 의 `LOGCAT_MIN_WIDTH(720)` / `TOOL_WIDTH(290)` / `TOOL_COLLAPSED_WIDTH(18)` / `LAYOUT_GAP` / `LAYOUT_PAD` 는 `style.css` 값을 그대로 옮겨 적은 것이고, 이 합으로 `window:set-min-size` 최소 창 너비를 계산한다. 한쪽만 고치면 마지막 컬럼이 잘린다. 단 **창 최소 크기의 하한은 실행 시 크기**다(`pickLaunchSize()` — 가로·세로 모두). 렌더러가 보내는 값은 그 하한을 **올리기만** 하고(디바이스가 넓을 때), 최소 높이는 아예 건드리지 않는다.
 - **바이너리 경로는 `resolveBin()` 을 통해서만 얻는다.** `bin/` → macOS/Linux 표준 경로(`/opt/homebrew/bin` 등) → `where`/`which` 순으로 탐색한다. macOS GUI 실행 시 `$PATH` 가 비어 있는 문제 때문에 필요한 로직이다. 패키징 상태에서 `resourcesPath/bin` 이 쓰기 불가면 `userData/bin` 으로 복사 후 전환한다 (`main.js` 상단).

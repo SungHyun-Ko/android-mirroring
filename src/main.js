@@ -5,6 +5,7 @@ const fs = require('fs')
 const os = require('os')
 const MirrorBridge = require('./mirror-bridge')
 const iosDevice = require('./ios-device')
+const deviceHub = require('./device-hub')
 const CertManager = require('./cert-manager')
 const ProxyServer = require('./proxy-server')
 const jira = require('./jira')
@@ -92,6 +93,32 @@ function getMirror() {
   return mirror
 }
 
+// ── 멀티 디바이스 (device-hub.js) ──────────────────────────────
+// 연결된 모든 기기의 LogCat 저장과 연결 유지. 화면에서 고른 1대의 미러링·실시간 LogCat 과는
+// 따로 돈다 — 무엇을 보고 있든 저장은 계속된다.
+let hub = null
+function getHub() {
+  if (hub) return hub
+  hub = deviceHub.create({
+    // 절대 reject 하지 않는다. adb connect 처럼 실패해도 종료 코드 0 인 명령이 있어서
+    // 성공 여부는 호출하는 쪽이 출력으로 판단한다.
+    exec: args => new Promise(resolve => {
+      if (!adbPath) return resolve({ code: -1, out: '', err: 'adb 를 찾을 수 없습니다' })
+      execFile(adbPath, args, { timeout: 25000 }, (err, stdout, stderr) =>
+        resolve({ code: err ? (err.code ?? 1) : 0, out: String(stdout || ''), err: String(stderr || err?.message || '') }))
+    }),
+    spawnLogcat: args => {
+      if (!adbPath) throw new Error('adb 를 찾을 수 없습니다')
+      return spawn(adbPath, args)   // 'error' 핸들러는 device-hub 가 바로 단다
+    },
+    userDir: app.getPath('userData'),
+    defaultLogDir: path.join(app.getPath('documents'), 'DroidBridge Logs'),
+    onUpdate: list => mainWindow?.webContents.send('device:update', list),
+    onLog: logMirror,
+  })
+  return hub
+}
+
 // ── 윈도우 생성 ────────────────────────────────────────────────
 // 실행 크기이자 최소 크기. 화면이 작으면 작업 영역에 맞춰 줄인다 — 안 그러면 최소 크기가
 // 화면보다 커져 창을 아예 못 쓴다.
@@ -151,11 +178,15 @@ function createWindow() {
     mirror?.destroy()
     stopLogcat()   // 창이 닫혀도 adb logcat 이 남아 돌지 않게
     ios?.stopTunnel()   // go-ios userspace 터널도 같이 내린다
+    hub?.stop()         // 기기별 저장 logcat 도 내린다 (파일은 매번 바로 써서 닫기만 하면 된다)
     mainWindow = null
   })
 }
 
-app.whenReady().then(createWindow)
+app.whenReady().then(() => {
+  createWindow()
+  getHub().start()
+})
 app.on('window-all-closed', () => { if (platform !== 'darwin') app.quit() })
 app.on('activate', () => { if (!mainWindow) createWindow() })
 
@@ -205,8 +236,41 @@ ipcMain.handle('adb:disconnect', async (_, target) => {
   } catch (e) { return { ok: false, message: String(e) } }
 })
 
+// 멀티 디바이스 — 바둑판 카드의 동작들
+ipcMain.handle('device:list', () => getHub().snapshot())
+ipcMain.handle('device:add-wifi', (_, ip, port) => getHub().addWifi(ip, port))
+ipcMain.handle('device:to-wifi', (_, id) => getHub().toWifi(id))
+ipcMain.handle('device:remove', (_, id) => getHub().remove(id))
+ipcMain.handle('device:set-recording', (_, id, on) => getHub().setRecording(id, on))
+ipcMain.handle('device:open-folder', async (_, id) => {
+  const err = await shell.openPath(getHub().folderOf(id))
+  return err ? { ok: false, message: err } : { ok: true }
+})
+ipcMain.handle('logcat:rec-settings', () => getHub().getSettings())
+ipcMain.handle('logcat:rec-settings-save', (_, s) => getHub().setSettings(s || {}))
+ipcMain.handle('dialog:chooseLogDir', async (_, current) => {
+  const r = await dialog.showOpenDialog(mainWindow, {
+    title: '로그 저장 위치', defaultPath: current || undefined,
+    properties: ['openDirectory', 'createDirectory'],
+  })
+  return r.canceled || !r.filePaths[0] ? { ok: false, canceled: true } : { ok: true, path: r.filePaths[0] }
+})
+// 수동 전용 — 모든 기기 연결이 한꺼번에 끊긴다. 자동 복구에는 쓰지 않는다 (device-hub.js 참고)
+ipcMain.handle('adb:restart-server', () => getHub().restartServer())
+
 // ── 미러링 IPC (MirrorBridge 사용) ────────────────────────────
-ipcMain.handle('mirror:start', async (_, { serial, maxSize, videoBitrate, fps }) => {
+// 미러링 준비·시작·중지는 한 줄로 세운다. MirrorBridge 는 한 번에 한 세션만 다루는데,
+// start() 가 끝나기 전에 다른 start()/stop() 이 끼어들면 서버가 두 개 뜨고 소켓과 화면 정보가
+// 섞인다. 기기 바꾸기를 넣은 뒤 실측으로 겪었다 — STEP 1 이 1초 간격으로 겹쳐 두 기기 서버가
+// 함께 떴고, 새 연결에 이전 기기의 해상도가 전송됐다.
+let mirrorQueue = Promise.resolve()
+function inMirrorQueue(fn) {
+  const run = mirrorQueue.then(fn, fn)
+  mirrorQueue = run.catch(() => { })
+  return run
+}
+
+ipcMain.handle('mirror:start', (_, { serial, maxSize, videoBitrate, fps }) => inMirrorQueue(async () => {
   try {
     adbPath = resolveBin(adbBin) // 재탐색 (setup 이후 변경 대응)
     await getMirror().start({ serial, maxSize, videoBitrate, fps })
@@ -214,16 +278,14 @@ ipcMain.handle('mirror:start', async (_, { serial, maxSize, videoBitrate, fps })
   } catch (e) {
     return { ok: false, message: e.message }
   }
-})
+}))
 
-ipcMain.handle('mirror:stop', async () => {
+ipcMain.handle('mirror:stop', () => inMirrorQueue(async () => {
   await mirror?.stop()
   return { ok: true }
-})
+}))
 
-ipcMain.handle('mirror:init', async () => {
-  return await getMirror().startWss()
-})
+ipcMain.handle('mirror:init', () => inMirrorQueue(() => getMirror().startWss()))
 
 // ── 화면 캡처 ──────────────────────────────────────────────────
 // 미리보기 → 저장/취소 흐름이라 캡처 시점에는 파일을 만들지 않는다.

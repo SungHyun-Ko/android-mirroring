@@ -539,3 +539,52 @@ input[type="range"]::-webkit-slider-thumb:hover {
   -webkit-user-select: text;
   cursor: text;
 }
+
+/* ── 오른쪽 패널 탭: 기기 ↔ LogCat (멀티 디바이스, docs/MULTI-DEVICE-PLAN.md) ──
+   바둑판은 사라지지 않고 탭 뒤로 물러난다. 기존 LogCat 마크업은 #logcatPane 안에 그대로 있다. */
+.rp-tabs { display:flex; gap:2px; padding:6px 10px 0; flex:0 0 auto; border-bottom:1px solid var(--border); }
+.rp-tab { display:flex; align-items:center; gap:6px; padding:7px 12px; font-size:12px; font-weight:500;
+  color:var(--muted); cursor:pointer; white-space:nowrap; border-bottom:2px solid transparent; margin-bottom:-1px;
+  transition:color .15s; }
+.rp-tab:hover { color:var(--text); }
+.rp-tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+.rp-tab i { font-size:14px; }
+.rp-warn { color:var(--amber); }
+.rp-warn:empty { display:none; }
+.rp-pane { flex:1; min-height:0; display:flex; flex-direction:column; position:relative; }
+#devicePane { overflow:auto; padding:12px; }
+
+.device-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(210px, 1fr)); gap:10px; align-content:start; }
+.device-grid-note { font-size:12px; color:var(--muted); margin:12px 2px 0; line-height:1.6; }
+.device-grid-note:empty { display:none; }
+.dev-card { position:relative; display:flex; flex-direction:column; gap:3px; min-height:96px; padding:10px 12px;
+  background:var(--surface2); border:1px solid var(--border2); border-radius:var(--radius-sm); cursor:pointer;
+  transition:border-color .15s; }
+.dev-card:hover { border-color:var(--accent); }
+/* 지금 미러링 중인 기기. 테두리가 두꺼워지는 만큼 안쪽 여백을 줄여 카드가 흔들리지 않게 */
+.dev-card.selected { border:2px solid var(--accent); padding:9px 11px; }
+.dev-name { display:flex; align-items:center; gap:6px; padding-right:74px; font-size:13px; font-weight:600;
+  color:var(--text); overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.dev-name i { font-size:14px; flex-shrink:0; }
+.dev-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; background:var(--muted); }
+.dev-dot.online { background:var(--accent2); }
+.dev-sub { font-size:11.5px; color:var(--muted); overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.dev-sub.rec { color:var(--text); }
+.dev-sub.rec i { color:var(--red); font-size:11px; }
+.dev-sub.warn { color:var(--amber); }
+.dev-badges { display:flex; flex-wrap:wrap; gap:4px; margin-top:2px; }
+.dev-badge { font-size:11px; padding:1px 6px; border-radius:4px; background:rgba(232,93,93,.15); color:var(--red); }
+.dev-actions { position:absolute; top:6px; right:6px; display:flex; gap:2px; }
+.dev-actions .btn-icon { width:22px; height:22px; }
+.dev-actions .btn-icon i { font-size:12px; }
+.dev-actions .btn-icon.off i { color:var(--muted); }
+.dev-add { align-items:center; justify-content:center; gap:6px; color:var(--muted); border-style:dashed; font-size:12px; }
+.dev-add i { font-size:18px; }
+.dev-add:hover { color:var(--accent); }
+
+/* 설정 탭 — LogCat 자동 저장 카드의 저장 위치 줄 */
+.rec-dir-row { display:flex; flex-direction:column; gap:6px; font-size:12px; }
+.rec-dir { padding:6px 8px; font-size:12px; color:var(--text); word-break:break-all; line-height:1.5;
+  background:var(--surface2); border:1px solid var(--border); border-radius:6px; }
+/* 재연결 중 — 앱의 다른 '진행 중' 표시와 같은 깜빡임 */
+.dev-busy { animation:pulse 1.4s ease-in-out infinite; }

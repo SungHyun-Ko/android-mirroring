@@ -15,6 +15,23 @@ const state = {
   maxSize: 1280,
 }
 
+// 멀티 디바이스 상태 — 여러 함수가 초기화 중에도 읽으므로 맨 위에 둔다. 클래식 스크립트 한
+// 덩어리라 선언 전에 읽히면(TDZ) 이후 코드가 통째로 죽는다.
+let hubDevices = []           // device-hub 스냅샷 (연결된 모든 기기)
+let selectedDeviceId = null   // 지금 미러링 중인 기기의 ro.serialno
+let lastSelectedStatus = null // 그 기기가 끊겼다 돌아왔는지 알아채려고
+let rightTab = 'devices'      // 오른쪽 패널: 'devices' | 'logcat'
+let logcatScrollMemo = null   // LogCat 탭을 숨기기 직전 스크롤 — 숨긴 동안엔 높이가 0 이라 따라가기가 풀린다
+let lastGridHtml = ''
+let recDirPending = null      // 설정 탭에서 고른 저장 위치 ('설정 저장'으로 적용)
+// 미러링 세션 번호. 시작·중지할 때마다 올려서, 지난 세션의 늦은 웹소켓 이벤트(닫힘 등)가 새
+// 세션의 화면을 지우지 못하게 한다 — 기기를 바꾸면 이전 연결의 닫힘 이벤트가 새 세션 도중에 온다.
+let mirrorSession = 0
+let mirrorStarting = null     // 진행 중인 startMirror() — 다음 기기 전환이 이걸 기다린다
+// 기기 전환(고르기·해제·자동 재시작)은 한 줄로 세운다. 겹치면 미러링 서버가 두 개 뜬다.
+let deviceOpChain = Promise.resolve()
+let followQueued = false
+
 // ── 보기 회전 ──────────────────────────────────────────────────
 // 기기를 실제로 돌리지 않고 우리가 그리는 방향만 90°씩 바꾼다.
 // (기기 회전은 앱이 세로 고정이면 거부당한다 — 삼성 런처가 그렇다. 실측으로 확인했다)
@@ -144,13 +161,35 @@ async function refreshDevices() {
       () => selectDevice({ platform: 'ios', serial: d.udid, model: d.name, ios: d })))
 }
 
+// 기기 전환 작업을 줄 세운다. 이미 줄 안에서 도는 작업은 이걸 다시 부르면 안 된다 — 자기 뒤에
+// 선 작업을 기다리게 되어 멈춘다. 줄 안에서는 doSelectDevice / releaseDevice 를 직접 부른다.
+function queueDeviceOp(fn) {
+  const run = deviceOpChain.then(fn, fn)
+  deviceOpChain = run.catch(e => console.warn('기기 전환 중 오류: ' + (e?.message || e)))
+  return run
+}
+
 function selectDevice(d) {
+  closeModal()
+  return queueDeviceOp(() => doSelectDevice(d))
+}
+
+async function doSelectDevice(d) {
+  if (state.serial === d.serial) { setRightTab('logcat'); return }   // 이미 보고 있는 기기
+  // 미러링·LogCat·Activity 폴링은 한 번에 1대만 돈다 — 다른 기기를 보고 있었으면 먼저 내린다.
+  // adb 연결은 끊지 않는다. 저장은 device-hub 가 모든 기기에서 계속 받는다.
+  if (state.serial) await releaseDevice()
   state.platform = d.platform || 'android'
   state.serial = d.serial
   state.model = d.model
   state.ios = d.ios || null
-  closeModal()
+  selectedDeviceId = d.id || hubIdOf(d.serial)
+  lastSelectedStatus = 'online'
   setConnected(d.model)
+  setRightTab('logcat')
+  renderDeviceGrid()
+  // 다음 전환은 이 기기의 미러링 시작이 끝난 뒤에 — 시작 도중에 멈추면 서버가 남아 섞인다
+  await mirrorStarting
 }
 
 function isIos() { return state.platform === 'ios' }
@@ -186,7 +225,7 @@ function setConnected(name) {
   startActivityPolling()
   // 연결되면 미러링과 LogCat 을 바로 시작한다 (시작 버튼을 없앤 대신)
   if (!logcatRunning) toggleLogcat()
-  if (!state.mirroring) startMirror()
+  if (!state.mirroring) mirrorStarting = startMirror()
 }
 
 // ── 현재 화면(Activity) 조회 ───────────────────────────────────
@@ -246,19 +285,27 @@ async function connectWifi() {
   const ip = $('ipInput').value.trim()
   const port = $('portInput').value || 5555
   if (!ip) { showToast('IP 주소를 입력하세요', true); return }
+  const prevText = $('connText')?.textContent
   setClass('connBadge', 'conn-badge searching')
   setText('connText', '연결 중...')
-  const r = await window.db.connect(ip, parseInt(port))
-  if (r.ok) {
-    state.serial = `${ip}:${port}`
-    state.model = ip
-    closeModal()
-    setConnected(ip)
-  } else {
-    setClass('connBadge', 'conn-badge disconnected')
-    setText('connText', '연결되지 않음')
+  // 멀티 디바이스: 연결하면서 이 주소를 그 기기의 고정 주소로 기억한다 — 끊기면 여기로 다시 붙는다
+  const r = await window.db.deviceAddWifi(ip, parseInt(port))
+  if (!r.ok) {
+    setClass('connBadge', state.serial ? 'conn-badge connected' : 'conn-badge disconnected')
+    setText('connText', state.serial ? prevText : '연결되지 않음')
     showToast('연결 실패: ' + r.message, true)
+    return
   }
+  if (state.serial) {
+    // 이미 다른 기기를 보고 있으면 화면은 그대로 두고 목록에만 넣는다
+    setClass('connBadge', 'conn-badge connected')
+    setText('connText', prevText)
+    closeModal()
+    showToast(`${r.model} 추가됨 — 기기 탭에서 고르면 미러링합니다`)
+    setRightTab('devices')
+    return
+  }
+  selectDevice({ id: r.id, serial: r.serial, model: r.model, platform: 'android' })
 }
 
 function wifiQuickConnect() {
@@ -267,6 +314,246 @@ function wifiQuickConnect() {
   setTimeout(() => {
     document.querySelectorAll('.modal-tab')[1].click()
   }, 50)
+}
+
+// ── 멀티 디바이스: 오른쪽 패널의 기기 바둑판 ───────────────────
+// 연결된 모든 기기의 상태와 저장은 메인의 device-hub.js 가 맡고, 여기는 그 스냅샷을 그린다.
+// 카드를 누르면 그 기기를 미러링하고 LogCat 탭으로 넘어간다. 바둑판은 사라지지 않고 탭 뒤로
+// 물러나서, 한 대를 보는 동안에도 다른 기기의 끊김·크래시가 탭 이름에 보인다.
+// 설계: docs/MULTI-DEVICE-PLAN.md
+const DEVICE_STATUS_TEXT = {
+  online: '연결됨',
+  reconnecting: '재연결 중',
+  unplugged: '연결 대기 — 다시 꽂으면 이어서 받습니다',
+  unauthorized: '인증 필요 — 폰에서 "USB 디버깅 허용"을 눌러 주세요',
+  'port-closed': '포트 풀림 — USB 를 한 번 꽂거나 무선 디버깅을 켜 주세요',
+  failed: '복구 실패 — 계속 다시 시도합니다',
+}
+const PROBLEM_STATUSES = ['reconnecting', 'unplugged', 'unauthorized', 'port-closed', 'failed']
+
+window.db.onDeviceUpdate(list => { hubDevices = list || []; onHubUpdate() })
+window.db.deviceList().then(list => { hubDevices = list || []; onHubUpdate() }).catch(() => { })
+
+function hubIdOf(serial) {
+  return hubDevices.find(d => d.activeSerial === serial || d.usbSerial === serial || d.wifiSerial === serial)?.id || null
+}
+
+function idlePhoneMsg() {
+  return hubDevices.some(d => d.status === 'online') ? '오른쪽 목록에서 기기를 선택하세요' : '기기를 연결해 주세요'
+}
+
+function onHubUpdate() {
+  renderDeviceGrid()
+  followSelectedDevice()
+}
+
+// 보고 있는 기기의 연결 경로가 바뀌거나(USB 뽑힘 → Wi-Fi) 끊겼다 다시 붙으면 따라간다.
+// 기기 전환 줄에 서서 돈다 — 사용자가 다른 기기를 고르는 중에 끼어들면 미러링이 겹친다.
+function followSelectedDevice() {
+  if (!selectedDeviceId || followQueued) return
+  followQueued = true
+  queueDeviceOp(async () => {
+    followQueued = false
+    if (!selectedDeviceId) return                   // 그사이 해제됨
+    const d = hubDevices.find(x => x.id === selectedDeviceId)
+    if (!d) { await releaseDevice(); return }       // 목록에서 제거됨
+    const was = lastSelectedStatus
+    lastSelectedStatus = d.status
+    if (d.status !== 'online' || !d.activeSerial) return
+    if (d.activeSerial !== state.serial) {
+      showToast(`${d.model}: 연결 경로가 바뀌어 다시 붙습니다`)
+      await doSelectDevice({ id: d.id, serial: d.activeSerial, model: d.model, platform: 'android' })
+    } else if (was && was !== 'online') {
+      // 끊겼다 같은 경로로 돌아옴 — 시작 버튼이 없는 구조라 미러링·LogCat 을 다시 켠다
+      if (!logcatRunning) toggleLogcat()
+      if (!state.mirroring) { mirrorStarting = startMirror(); await mirrorStarting }
+    }
+  })
+}
+
+function setRightTab(tab) {
+  if (tab === rightTab) return
+  const body = $('logcatBody')
+  if (rightTab === 'logcat' && body) {
+    logcatScrollMemo = { atBottom: body.scrollHeight - body.scrollTop - body.clientHeight < 40, top: body.scrollTop }
+  }
+  rightTab = tab
+  $('rpTabDevices')?.classList.toggle('active', tab === 'devices')
+  $('rpTabLogcat')?.classList.toggle('active', tab === 'logcat')
+  if ($('devicePane')) $('devicePane').style.display = tab === 'devices' ? '' : 'none'
+  if ($('logcatPane')) $('logcatPane').style.display = tab === 'logcat' ? '' : 'none'
+  if (tab === 'logcat' && body) {
+    const m = logcatScrollMemo
+    if (!m || m.atBottom) scrollLogcatToBottom()
+    else body.scrollTop = m.top
+  }
+}
+
+function fmtBytes(n) {
+  if (!n) return '0KB'
+  if (n < 1024 * 1024) return Math.max(1, Math.round(n / 1024)) + 'KB'
+  if (n < 1024 ** 3) return (n / 1024 / 1024).toFixed(1) + 'MB'
+  return (n / 1024 ** 3).toFixed(2) + 'GB'
+}
+// 카드가 자주 다시 그려지면 클릭이 씹힐 수 있어 시간은 굵게만 표시한다 (분 단위)
+function fmtAgo(t) {
+  const s = (Date.now() - t) / 1000
+  return s < 60 ? '방금' : s < 3600 ? Math.floor(s / 60) + '분 전' : Math.floor(s / 3600) + '시간 전'
+}
+function fmtElapsed(t) {
+  const s = (Date.now() - t) / 1000
+  return s < 60 ? '1분 미만' : s < 3600 ? Math.floor(s / 60) + '분째' : Math.floor(s / 3600) + '시간째'
+}
+
+function deviceCardHtml(d) {
+  const sel = d.id === selectedDeviceId
+  const icon = d.status === 'online' ? '<span class="dev-dot online"></span>'
+    : d.status === 'reconnecting' ? '<i class="ti ti-refresh dev-busy" style="color:var(--amber)"></i>'
+      : ['unauthorized', 'port-closed'].includes(d.status) ? '<i class="ti ti-alert-triangle" style="color:var(--amber)"></i>'
+        : '<span class="dev-dot"></span>'
+  const via = d.transports.length === 2 ? 'USB + Wi-Fi'
+    : d.transports[0] === 'usb' ? 'USB'
+      : d.address ? 'Wi-Fi ' + d.address.replace(/:5555$/, '')
+        : d.transports[0] === 'wifi' ? 'Wi-Fi' : 'USB'
+
+  let state3
+  if (d.status === 'online') {
+    const r = d.recording
+    state3 = !r.on ? '<div class="dev-sub">저장 꺼짐 · 오른쪽 위 ● 로 켜기</div>'
+      : r.error && !r.running ? `<div class="dev-sub warn" title="${escapeHtml(r.error)}">저장 오류 — ${escapeHtml(r.error)}</div>`
+        : r.running ? `<div class="dev-sub rec"><i class="ti ti-player-record"></i> 저장 중 · 오늘 ${fmtBytes(r.bytesToday)}${r.lastAt ? ' · ' + fmtAgo(r.lastAt) : ''}</div>`
+          : '<div class="dev-sub">저장 준비 중</div>'
+  } else {
+    const full = DEVICE_STATUS_TEXT[d.status] || d.status
+    const since = d.badSince && ['reconnecting', 'failed', 'unplugged'].includes(d.status) ? ' · ' + fmtElapsed(d.badSince) : ''
+    state3 = `<div class="dev-sub warn" title="${escapeHtml(full)}">${escapeHtml(full.split(' — ')[0])}${since}</div>`
+  }
+  const badges = (d.crash ? `<span class="dev-badge">크래시 ${d.crash}</span>` : '') +
+    (d.anr ? `<span class="dev-badge">ANR ${d.anr}</span>` : '')
+  // 동작 버튼 — 카드 클릭(미러링)과 겹치지 않게 전파를 막는다. id 는 data-id 로만 넘긴다.
+  const acts = [
+    `<button class="btn-icon${d.recording.on ? '' : ' off'}" title="${d.recording.on ? '이 기기 저장 끄기' : '이 기기 저장 켜기'}"
+       onclick="event.stopPropagation();toggleDeviceRecording(this)"><i class="ti ti-player-record"></i></button>`,
+    `<button class="btn-icon" title="로그 폴더 열기" onclick="event.stopPropagation();openDeviceFolder(this)"><i class="ti ti-folder-open"></i></button>`,
+    d.usbOnline ? `<button class="btn-icon" title="Wi-Fi 로 전환 — 포트 5555 로 열고 이 주소를 기억합니다. 그다음엔 케이블을 뽑아도 됩니다"
+       onclick="event.stopPropagation();deviceToWifi(this)"><i class="ti ti-wifi"></i></button>` : '',
+    !d.usbOnline ? `<button class="btn-icon" title="목록에서 제거${d.remembered ? ' (기억해 둔 Wi-Fi 주소도 지웁니다)' : ''}"
+       onclick="event.stopPropagation();removeDevice(this)"><i class="ti ti-x"></i></button>` : '',
+  ].join('')
+  return `<div class="dev-card${sel ? ' selected' : ''}" data-id="${escapeHtml(d.id)}" onclick="pickDevice(this)">
+    <div class="dev-actions">${acts}</div>
+    <div class="dev-name">${icon}<span>${escapeHtml(d.model)}</span></div>
+    <div class="dev-sub">${escapeHtml(via)}${sel ? ' · 미러링 중' : ''}</div>
+    ${state3}
+    ${badges ? `<div class="dev-badges">${badges}</div>` : ''}
+  </div>`
+}
+
+function renderDeviceGrid() {
+  const problems = hubDevices.filter(d => PROBLEM_STATUSES.includes(d.status) || d.crash || d.anr).length
+  setText('rpDevicesLabel', hubDevices.length ? `기기 ${hubDevices.length}대` : '기기')
+  setText('rpDevicesWarn', problems ? `· 문제 ${problems}` : '')
+  const sel = hubDevices.find(d => d.id === selectedDeviceId)
+  setText('rpLogcatLabel', state.serial
+    ? `LogCat · ${state.model || state.serial}${sel && sel.status !== 'online' ? ' (끊김)' : ''}` : 'LogCat')
+  if (!state.serial) setText('phoneMsg', idlePhoneMsg())
+  setText('deviceGridNote', hubDevices.length ? ''
+    : 'USB 로 꽂으면 저절로 뜨고, Wi-Fi 기기는 "기기 추가"로 넣습니다. LogCat 저장은 기기 카드의 ● 로 기기마다 켭니다 (위치·주기는 설정 탭).')
+
+  const grid = $('deviceGrid')
+  if (!grid) return
+  const html = hubDevices.map(deviceCardHtml).join('') +
+    `<div class="dev-card dev-add" onclick="wifiQuickConnect()" title="Wi-Fi 기기를 IP·포트로 추가합니다. USB 기기는 꽂으면 저절로 뜹니다.">
+      <i class="ti ti-plus"></i><span>기기 추가 (Wi-Fi)</span></div>`
+  // 바뀐 게 없으면 다시 그리지 않는다 — 누르는 도중에 카드가 바뀌면 클릭이 씹힌다
+  if (html === lastGridHtml) return
+  lastGridHtml = html
+  grid.innerHTML = html
+}
+
+const cardDevice = el => hubDevices.find(d => d.id === el?.closest('.dev-card')?.dataset.id)
+
+function pickDevice(el) {
+  const d = cardDevice(el)
+  if (!d) return
+  if (d.status !== 'online' || !d.activeSerial) {
+    showToast(`${d.model}: ${DEVICE_STATUS_TEXT[d.status] || d.status}`, d.status !== 'reconnecting')
+    return
+  }
+  selectDevice({ id: d.id, serial: d.activeSerial, model: d.model, platform: 'android' })
+}
+
+async function toggleDeviceRecording(el) {
+  const d = cardDevice(el)
+  if (!d) return
+  await window.db.deviceSetRecording(d.id, !d.recording.on)
+  showToast(`${d.model}: 저장 ${d.recording.on ? '끔' : '켬'}`)
+}
+
+async function openDeviceFolder(el) {
+  const r = await window.db.deviceOpenFolder(cardDevice(el)?.id || null)
+  if (!r.ok) showToast('폴더를 열 수 없습니다: ' + (r.message || ''), true)
+}
+
+async function deviceToWifi(el) {
+  const d = cardDevice(el)
+  if (!d) return
+  const viewing = d.id === selectedDeviceId
+  if (!confirm(`${d.model} 을 Wi-Fi 로 전환합니다.\n폰의 adb 가 다시 시작되어 ${viewing ? '미러링이 잠깐 끊겼다가 다시 붙고, ' : ''}` +
+    '이후엔 케이블을 뽑아도 Wi-Fi 로 계속 연결됩니다.\n진행할까요?')) return
+  showToast(`${d.model}: Wi-Fi 로 전환 중…`, false, true)
+  const r = await window.db.deviceToWifi(d.id)
+  showToast(r.ok ? `${d.model}: Wi-Fi 로 전환했습니다 (${r.address}). 이제 케이블을 뽑아도 됩니다`
+    : `${d.model}: 전환 실패 — ${r.message}`, !r.ok)
+}
+
+async function removeDevice(el) {
+  const d = cardDevice(el)
+  if (!d) return
+  if (!confirm(`${d.model} 을 목록에서 뺄까요?` +
+    (d.remembered ? '\n기억해 둔 Wi-Fi 주소도 지우고 연결을 끊습니다.' : '') +
+    '\n저장된 로그 파일은 지우지 않습니다.')) return
+  if (d.id === selectedDeviceId) await queueDeviceOp(() => releaseDevice())
+  await window.db.deviceRemove(d.id)
+}
+
+// ── 설정 탭: LogCat 자동 저장 ──
+async function loadRecSettings() {
+  const s = await window.db.recSettings().catch(() => null)
+  if (!s) return
+  if ($('recAutoNew')) $('recAutoNew').checked = !!s.autoNew
+  if ($('recInterval')) $('recInterval').value = String(s.intervalMin)
+  if ($('recRetention')) $('recRetention').value = String(s.retentionDays)
+  recDirPending = s.dir
+  setText('recDir', s.dir)
+}
+
+async function saveRecSettings() {
+  const r = await window.db.recSettingsSave({
+    autoNew: !!$('recAutoNew')?.checked,
+    intervalMin: +($('recInterval')?.value || 60),
+    retentionDays: +($('recRetention')?.value || 7),
+    dir: recDirPending,
+  })
+  if (r?.settings) { recDirPending = r.settings.dir; setText('recDir', r.settings.dir) }
+}
+
+async function chooseRecDir() {
+  const r = await window.db.chooseLogDir(recDirPending)
+  if (!r.ok) return
+  recDirPending = r.path
+  setText('recDir', r.path)
+  showToast('하단 "설정 저장"을 누르면 새 위치에 저장합니다')
+}
+
+function openRecDir() { window.db.deviceOpenFolder(null) }
+
+async function restartAdbServer() {
+  if (!confirm('adb 서버를 다시 시작합니다.\n연결된 모든 기기가 잠깐 끊겼다가 다시 붙습니다 (Wi-Fi 기기는 기억해 둔 주소로).\n진행할까요?')) return
+  if (state.serial) await queueDeviceOp(() => releaseDevice())
+  showToast('adb 를 다시 시작하는 중…', false, true)
+  const r = await window.db.adbRestartServer()
+  showToast(r.ok ? 'adb 를 다시 시작했습니다' : '재시작 실패: ' + (r.message || ''), !r.ok)
 }
 
 // ── 미러링 ─────────────────────────────────────────────────────
@@ -611,7 +898,7 @@ function resetPhoneScreen() {
   screen.innerHTML = `
     <div class="phone-notch"></div>
     <i class="ti ti-device-mobile-off" id="phoneIcon"></i>
-    <p id="phoneMsg">${state.serial ? '미러링 시작 버튼을 눌러주세요' : '기기를 연결해 주세요'}</p>
+    <p id="phoneMsg">${state.serial ? '미러링 시작 버튼을 눌러주세요' : idlePhoneMsg()}</p>
     <div class="phone-home"></div>`
 }
 
@@ -1323,8 +1610,11 @@ function feedFrame(uint8) {
 }
 
 
-function connectMirrorWs(canvas, wsPort) {
+function connectMirrorWs(canvas, wsPort, session) {
   if (mirrorWs) { mirrorWs.close(); mirrorWs = null }
+  // 이 연결이 지금 세션 것인지. 아니면 무엇이 와도 손대지 않는다 — 지난 세션의 늦은 이벤트가
+  // 새 세션의 상태를 끄고 화면을 지우던 문제를 막는다.
+  const live = () => session === mirrorSession
 
   // bridge가 준비될 때까지 재시도 (최대 10회, 600ms 간격)
   let attempts = 0
@@ -1337,18 +1627,20 @@ function connectMirrorWs(canvas, wsPort) {
   let wsFrameCount = 0
 
   const tryWs = () => {
-    if (!state.mirroring) return
+    if (!state.mirroring || !live()) return
     logMirror(`WS 연결 시도 ${attempts + 1}/${MAX}...`)
     const ws = new WebSocket(`ws://127.0.0.1:${wsPort}`)
     ws.binaryType = 'arraybuffer'
 
     ws.onopen = () => {
+      if (!live()) { ws.close(); return }
       mirrorWs = ws
       wsFrameCount = 0
       logMirror('★ WS 연결 성공!')
     }
 
     ws.onmessage = e => {
+      if (!live()) return
       if (typeof e.data === 'string') {
         try {
           const msg = JSON.parse(e.data)
@@ -1398,6 +1690,7 @@ function connectMirrorWs(canvas, wsPort) {
     ws.onerror = (ev) => {
       logMirror(`WS onerror 발생 (시도 ${attempts + 1}/${MAX})`)
       ws.close()
+      if (!live()) return
       attempts++
       if (attempts < MAX) {
         setTimeout(tryWs, 600)
@@ -1411,8 +1704,11 @@ function connectMirrorWs(canvas, wsPort) {
 
     ws.onclose = (ev) => {
       logMirror(`WS onclose (code=${ev.code}, reason=${ev.reason || 'none'}, 수신프레임=${wsFrameCount})`)
+      // 열린 적 없는 재시도(실패한 시도도 닫힘 이벤트가 온다)나 이미 갈아 끼운 연결의 닫힘은
+      // 세션 종료가 아니다. 예전엔 이걸 구분하지 않아 실패한 첫 시도가 재시도까지 멈췄다.
+      if (mirrorWs !== ws) return
       mirrorWs = null
-      if (state.mirroring) {
+      if (live() && state.mirroring) {
         state.mirroring = false
         resetPhoneScreen()
       }
@@ -1441,15 +1737,17 @@ async function startMirror() {
     el.scrollTop = el.scrollHeight
   })
 
+  const session = ++mirrorSession
   state.mirroring = true
   updateMirrorToggle()   // 시작은 오래 걸리므로 버튼부터 바로 뒤집는다
   const canvas = getMirrorCanvas()
 
   // 동적 웹소켓 포트 요청 및 초기화
   const wsPort = await window.db.initMirror()
+  if (session !== mirrorSession) return   // 그사이 멈췄거나 다른 세션이 시작됨
 
   // WS 연결 시도 (bridge보다 먼저 시작 — retry로 버팀)
-  connectMirrorWs(canvas, wsPort)
+  connectMirrorWs(canvas, wsPort, session)
 
   // bridge 시작 (jar 푸시 + 서버 실행 + 소켓 연결)
   const r = await window.db.startMirror({
@@ -1458,6 +1756,7 @@ async function startMirror() {
     maxSize: state.maxSize || 0,
     fps,
   })
+  if (session !== mirrorSession) return
 
   if (!r.ok) {
     state.mirroring = false
@@ -1473,7 +1772,9 @@ async function startMirror() {
   updateMirrorToggle()
 }
 
-async function stopMirror() {
+// quiet: 기기를 바꾸는 중간처럼 사용자가 멈춘 게 아닐 때는 안내를 띄우지 않는다
+async function stopMirror(quiet = false) {
+  mirrorSession++   // 진행 중이던 시작과 지난 연결의 늦은 이벤트를 모두 무효로
   stopDecoder()
   closeMirrorWs()
   configNalBuffer = null
@@ -1482,7 +1783,7 @@ async function stopMirror() {
   state.mirroring = false
   resetPhoneScreen()
   setText('statusText', '연결됨', 'var(--accent2)')
-  showToast('미러링 중지됨')
+  if (!quiet) showToast('미러링 중지됨')
   updateMirrorToggle()
 }
 
@@ -1494,16 +1795,26 @@ function toggleConnection() {
   else openConnectModal()
 }
 
-async function disconnectDevice() {
-  const name = state.model || state.serial
-  if (state.mirroring) await stopMirror()
+function disconnectDevice() {
+  return queueDeviceOp(async () => {
+    const name = state.model || state.serial
+    await releaseDevice()
+    showToast((name || '기기') + ' 연결 해제됨')
+  })
+}
+
+// 지금 보고 있는 기기를 내려놓는다 — 미러링·LogCat·Activity 폴링을 멈추고 화면을 비운다.
+async function releaseDevice() {
+  if (state.mirroring) await stopMirror(true)
   if (logcatRunning) { await window.db.stopLogcat(); setLogcatRunning(false) }
   stopActivityPolling()
 
-  // 실제로 끊을 수 있는 건 Wi-Fi(TCP) 뿐이다. USB 는 '선택 해제'가 전부다.
-  if (state.serial && state.serial.includes(':')) await window.db.disconnect(state.serial)
+  // 예전엔 여기서 Wi-Fi(TCP) 기기의 adb 연결을 끊었다. 멀티 디바이스에서는 그 연결로 저장이
+  // 계속 돌고 있어서 끊지 않는다 — 목록에서 아예 빼려면 카드의 '목록에서 제거'.
+  // if (state.serial && state.serial.includes(':')) await window.db.disconnect(state.serial)
 
   state.serial = null
+  selectedDeviceId = null
   state.model = null
   currentPkg = null
   currentPid = null
@@ -1520,7 +1831,8 @@ async function disconnectDevice() {
   resetPhoneScreen()
   updateLogFilterBtn()
   updateConnToggle()
-  showToast((name || '기기') + ' 연결 해제됨')
+  setRightTab('devices')
+  renderDeviceGrid()
 }
 
 // 버튼 한 개가 여러 역할을 하므로 탭·연결 상태가 바뀔 때마다 모양을 맞춰준다.
@@ -2008,6 +2320,7 @@ function openKeyboardSettings() {
 function saveSettings() {
   localStorage.setItem('db_bitrate', $('defBitrate').value)
   localStorage.setItem('db_fps', $('defFps').value)
+  saveRecSettings()   // LogCat 자동 저장 — 메인(device-hub)이 바로 적용한다
   showToast('설정이 저장되었습니다')
 }
 
@@ -2019,6 +2332,7 @@ function loadSettings() {
   // db_screen_width 는 더 이상 쓰지 않는다 — 높이가 창의 60% 로 고정이라 저장할 값이 없다
   changeScreenSize()
   updateMirrorToggle()
+  loadRecSettings()
 }
 
 loadSettings()
